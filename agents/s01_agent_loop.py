@@ -5,6 +5,8 @@
 核心逻辑在 core/loop.py；学习笔记在 docs/s01-notes.md。
 
 运行方式：python agents/s01_agent_loop.py
+
+本版本使用 OpenAI 兼容 API 格式（适配智谱 AI / GLM 5.1）。
 """
 from __future__ import annotations  # 启用延迟类型注解求值
 
@@ -28,10 +30,12 @@ SYSTEM = (
     "Use the `bash` tool to accomplish the user's task. Act, don't over-explain."
 )
 
-# 工具列表：传给 API 的工具 schema 数组，s02 起这里会变长
+# 工具列表：传给 API 的工具 schema 数组（OpenAI function calling 格式）
+# s02 起这里会变长（加新工具）
 TOOLS = [bash.SCHEMA]
 
-# 工具处理函数映射：工具名 → 执行函数，s02 起这里会新增条目
+# 工具处理函数映射：工具名 → 执行函数
+# s02 起这里会新增条目（加新 handler）
 HANDLERS = {"bash": bash.run}
 
 
@@ -66,18 +70,17 @@ def _print_assistant_text(messages: list) -> None:
     last = messages[-1]
 
     # 确保最后一条是 assistant 消息（否则不打印）
-    if last["role"] != "assistant":
+    if last.get("role") != "assistant":
         return
 
-    # 遍历最后一条 assistant 消息中的所有内容块
-    for block in last["content"]:
-        # 尝试获取 text 属性（文本块有 text，工具调用块没有）
-        text = getattr(block, "text", None)
+    # OpenAI 格式下，content 是纯字符串（不像 Anthropic 是内容块列表）
+    # 当模型调用工具时 content 可能为 None
+    text = last.get("content")
 
-        # 如果有文本内容且不是纯空白，就用绿色打印出来
-        if text and text.strip():
-            # \033[32m 是 ANSI 绿色转义码
-            print(f"\033[32m{text.strip()}\033[0m")
+    # 如果有文本内容且不是纯空白，就用绿色打印出来
+    if text and text.strip():
+        # \033[32m 是 ANSI 绿色转义码
+        print(f"\033[32m{text.strip()}\033[0m")
 
 
 def main() -> None:
@@ -107,7 +110,7 @@ def main() -> None:
         history.append({"role": "user", "content": query})
 
         # 调用核心 agent_loop 函数，驱动模型思考 + 工具执行的循环
-        # history 会被就地修改（追加 assistant 和 user 消息）
+        # history 会被就地修改（追加 assistant 和 tool 消息）
         stop_reason = agent_loop(
             history,  # 对话历史（就地修改）
             system=SYSTEM,  # 系统提示词
@@ -134,7 +137,7 @@ def _count_turns(messages: list) -> int:
         assistant 消息的数量（整数）
     """
     # 遍历所有消息，统计 role == "assistant" 的条数
-    return sum(1 for m in messages if m["role"] == "assistant")
+    return sum(1 for m in messages if m.get("role") == "assistant")
 
 
 # 当脚本被直接运行时（而非被 import），执行 main 函数

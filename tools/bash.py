@@ -2,26 +2,35 @@
 
 让 agent 能在沙盒中执行 shell 命令，与真实世界交互。
 包含危险命令黑名单过滤，防止 agent 执行破坏性操作。
+
+本版本使用 OpenAI function calling 格式定义工具 Schema，
+与 Anthropic 格式的区别：
+  - 工具定义外包一层 {"type": "function", "function": {...}}
+  - 参数定义用 "parameters" 而非 "input_schema"
 """
 from __future__ import annotations  # 启用延迟类型注解求值
 
 import os  # 操作系统接口，用于获取当前工作目录
 import subprocess  # 子进程管理，用于执行 shell 命令
 
-# 工具的 JSON Schema 定义，告诉 API 这个工具叫什么、接受什么参数
-# 这个 schema 会作为 tools 列表的一项传给 Anthropic Messages API
+# 工具的 OpenAI function calling Schema 定义
+# 这个 schema 会作为 tools 列表的一项传给 Chat Completions API
+# 外层必须包 {"type": "function", "function": {...}} 格式
 SCHEMA = {
-    "name": "bash",  # 工具名称，模型调工具时会用这个名字
-    "description": "Run a shell command in the current working directory and return stdout+stderr.",  # 工具描述，帮助模型理解何时该用这个工具
-    "input_schema": {  # 输入参数的 JSON Schema
-        "type": "object",  # 参数是一个对象（字典）
-        "properties": {  # 对象的属性定义
-            "command": {  # 参数名
-                "type": "string",  # 参数类型是字符串
-                "description": "The shell command to execute.",  # 参数描述
-            }
+    "type": "function",  # 工具类型，目前只有 "function"
+    "function": {  # 函数定义
+        "name": "bash",  # 工具名称，模型调工具时会用这个名字
+        "description": "Run a shell command in the current working directory and return stdout+stderr.",  # 工具描述
+        "parameters": {  # 参数定义（对应 Anthropic 格式的 input_schema）
+            "type": "object",  # 参数是一个对象（字典）
+            "properties": {  # 对象的属性定义
+                "command": {  # 参数名
+                    "type": "string",  # 参数类型是字符串
+                    "description": "The shell command to execute.",  # 参数描述
+                }
+            },
+            "required": ["command"],  # 必填参数列表
         },
-        "required": ["command"],  # 必填参数列表
     },
 }
 
