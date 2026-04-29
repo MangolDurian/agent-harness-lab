@@ -18,13 +18,18 @@ agent-harness-lab/
 │   ├── llm.py                  # Anthropic 客户端
 │   └── loop.py                 # agent_loop()
 ├── tools/                      # 工具集，s02 起会扩充
-│   └── bash.py
+│   ├── bash.py
+│   ├── read_file.py
+│   └── write_file.py
 ├── agents/                     # 每课一个入口脚本
-│   └── s01_agent_loop.py
+│   ├── s01_agent_loop.py
+│   └── s02_multi_tool.py
 ├── docs/                       # 每课一份学习笔记
-│   └── s01-notes.md
+│   ├── s01-notes.md
+│   └── s02-notes.md
 ├── examples/                   # 每课一份阶段成果验证清单
-│   └── s01_demo_prompts.md
+│   ├── s01_demo_prompts.md
+│   └── s02_demo_prompts.md
 ├── .env.example
 ├── requirements.txt
 └── README.md
@@ -44,7 +49,7 @@ python agents/s01_agent_loop.py
 | 课 | 主题 | 格言 | 状态 |
 |---|---|---|---|
 | s01 | Agent Loop | One loop & Bash is all you need | ✅ |
-| s02 | Tool Use | 加一个工具只加一个 handler | ⬜ |
+| s02 | Tool Use | 加一个工具只加一个 handler | ✅ |
 | s03 | TodoWrite | 没有计划的 agent 走哪算哪 | ⬜ |
 | s04 | Subagent | 大任务拆小，每个小任务干净的上下文 | ⬜ |
 | s05 | Skills | 用到什么知识，临时加载什么知识 | ⬜ |
@@ -81,3 +86,21 @@ python agents/s01_agent_loop.py
 | 工具分发 | 硬编码 `run_bash(...)` | `handlers: dict[str, Callable]` dispatch map |
 | 循环边界 | `while True` | `for turn in range(max_turns)` + 返回 `stop_reason` |
 | 分层 | 单文件 | `core / tools / agents` 三层，core 锁死 |
+
+---
+
+## s02：Multi-Tool（已完成）
+
+加一个工具只加一个 handler——core/loop.py 一行不改。
+
+- 代码：[`agents/s02_multi_tool.py`](./agents/s02_multi_tool.py) + [`tools/read_file.py`](./tools/read_file.py) + [`tools/write_file.py`](./tools/write_file.py)
+- 笔记：[`docs/s02-notes.md`](./docs/s02-notes.md)
+- 验证：[`examples/s02_demo_prompts.md`](./examples/s02_demo_prompts.md)
+
+### 相比原版的三个差异
+
+| 差异 | 原版 | 本项目 |
+|---|---|---|
+| 路径安全 | 无限制 | `resolve()` + `startswith()` 工作目录边界检查 |
+| 工具数量 | 只加一个 | 一次加两个（read + write），更能体现"叠加"模式 |
+| _print_tool_call | 统一格式 | 为每个工具定制可视化（read 显示路径，write 显示路径+行数） |
