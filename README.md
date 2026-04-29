@@ -20,16 +20,20 @@ agent-harness-lab/
 ├── tools/                      # 工具集，s02 起会扩充
 │   ├── bash.py
 │   ├── read_file.py
-│   └── write_file.py
+│   ├── write_file.py
+│   └── todo.py
 ├── agents/                     # 每课一个入口脚本
 │   ├── s01_agent_loop.py
-│   └── s02_multi_tool.py
+│   ├── s02_multi_tool.py
+│   └── s03_todo.py
 ├── docs/                       # 每课一份学习笔记
 │   ├── s01-notes.md
-│   └── s02-notes.md
+│   ├── s02-notes.md
+│   └── s03-notes.md
 ├── examples/                   # 每课一份阶段成果验证清单
 │   ├── s01_demo_prompts.md
-│   └── s02_demo_prompts.md
+│   ├── s02_demo_prompts.md
+│   └── s03_demo_prompts.md
 ├── .env.example
 ├── requirements.txt
 └── README.md
@@ -50,7 +54,7 @@ python agents/s01_agent_loop.py
 |---|---|---|---|
 | s01 | Agent Loop | One loop & Bash is all you need | ✅ |
 | s02 | Tool Use | 加一个工具只加一个 handler | ✅ |
-| s03 | TodoWrite | 没有计划的 agent 走哪算哪 | ⬜ |
+| s03 | TodoWrite | 没有计划的 agent 走哪算哪 | ✅ |
 | s04 | Subagent | 大任务拆小，每个小任务干净的上下文 | ⬜ |
 | s05 | Skills | 用到什么知识，临时加载什么知识 | ⬜ |
 | s06 | Context Compact | 上下文总会满，要有办法腾地方 | ⬜ |
@@ -104,3 +108,21 @@ python agents/s01_agent_loop.py
 | 路径安全 | 无限制 | `resolve()` + `startswith()` 工作目录边界检查 |
 | 工具数量 | 只加一个 | 一次加两个（read + write），更能体现"叠加"模式 |
 | _print_tool_call | 统一格式 | 为每个工具定制可视化（read 显示路径，write 显示路径+行数） |
+
+---
+
+## s03：TodoWrite（已完成）
+
+没有计划的 agent 走哪算哪——用 handler wrapper 闭包实现 nag 提醒，core/loop.py 一行不改。
+
+- 代码：[`agents/s03_todo.py`](./agents/s03_todo.py) + [`tools/todo.py`](./tools/todo.py)
+- 笔记：[`docs/s03-notes.md`](./docs/s03-notes.md)
+- 验证：[`examples/s03_demo_prompts.md`](./examples/s03_demo_prompts.md)
+
+### 相比原版的三个差异
+
+| 差异 | 原版 | 本项目 |
+|---|---|---|
+| Nag 实现方式 | 修改 agent_loop 内部，往 messages 注入 system reminder | handler wrapper 闭包，追加到工具输出尾部 |
+| 代码组织 | 单文件，TodoManager 和 handler 都内联 | `tools/todo.py` 独立模块 + `agents/` 组装 |
+| Todo schema 格式 | Anthropic input_schema | OpenAI function calling format |

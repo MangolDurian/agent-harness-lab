@@ -18,13 +18,15 @@ SCHEMA = {
     "type": "function",
     "function": {
         "name": "read_file",
-        "description": "Read the text content of a file within the working directory and return it.",
+        # "Read the text content of a file within the working directory and return it."
+        "description": "读取工作目录内文件的文本内容并返回。",
         "parameters": {
             "type": "object",
             "properties": {
                 "file_path": {
                     "type": "string",
-                    "description": "Path to the file to read. Can be absolute or relative to the working directory.",
+                    # "Path to the file to read. Can be absolute or relative to the working directory."
+                    "description": "要读取的文件路径，可以是绝对路径或相对于工作目录的路径。",
                 },
             },
             "required": ["file_path"],
@@ -51,7 +53,8 @@ def _resolve_safe(file_path: str) -> Path:
     # startswith 检查确保解析后的路径仍然在工作目录内
     if not str(target).startswith(str(_ROOT)):
         raise ValueError(
-            f"Path traversal blocked: '{file_path}' resolves outside the working directory."
+            # Path traversal blocked: '{file_path}' resolves outside the working directory.
+            f"路径穿越已拦截：'{file_path}' 解析到了工作目录之外。"
         )
     return target
 
@@ -69,25 +72,30 @@ def run(file_path: str) -> str:
     try:
         target = _resolve_safe(file_path)
     except ValueError as e:
-        return f"Error: {e}"
+        # Error: {e}
+        return f"错误：{e}"
 
     # 文件不存在
     if not target.exists():
-        return f"Error: file not found: {file_path}"
+        # Error: file not found: {file_path}
+        return f"错误：文件不存在：{file_path}"
 
     # 不是普通文件（可能是目录）
     if not target.is_file():
-        return f"Error: not a file: {file_path}"
+        # Error: not a file: {file_path}
+        return f"错误：不是文件：{file_path}"
 
     try:
         content = target.read_text(encoding="utf-8")
     except UnicodeDecodeError:
-        return f"Error: cannot read as text (binary file?): {file_path}"
+        # Error: cannot read as text (binary file?)
+        return f"错误：无法作为文本读取（可能是二进制文件？）：{file_path}"
     except OSError as e:
-        return f"Error: {e}"
+        # Error: {e}
+        return f"错误：{e}"
 
     # 超长截断
     if len(content) > _MAX_CHARS:
-        content = content[:_MAX_CHARS] + "\n...(truncated)"
+        content = content[:_MAX_CHARS] + "\n...（已截断）"
 
     return content

@@ -20,13 +20,15 @@ SCHEMA = {
     "type": "function",  # 工具类型，目前只有 "function"
     "function": {  # 函数定义
         "name": "bash",  # 工具名称，模型调工具时会用这个名字
-        "description": "Run a shell command in the current working directory and return stdout+stderr.",  # 工具描述
+        # "Run a shell command in the current working directory and return stdout+stderr."
+        "description": "在当前工作目录下执行一条 shell 命令，返回 stdout+stderr。",  # 工具描述
         "parameters": {  # 参数定义（对应 Anthropic 格式的 input_schema）
             "type": "object",  # 参数是一个对象（字典）
             "properties": {  # 对象的属性定义
                 "command": {  # 参数名
                     "type": "string",  # 参数类型是字符串
-                    "description": "The shell command to execute.",  # 参数描述
+                    # "The shell command to execute."
+                    "description": "要执行的 shell 命令。",  # 参数描述
                 }
             },
             "required": ["command"],  # 必填参数列表
@@ -51,7 +53,8 @@ def run(command: str) -> str:
     """
     # 安全校验：如果命令中包含黑名单中的危险子串，直接拒绝执行
     if any(bad in command for bad in _DANGEROUS):
-        return "Error: dangerous command blocked by harness."
+        # Error: dangerous command blocked by harness.
+        return "错误：危险命令已被安全策略拦截。"
 
     try:
         # 使用 subprocess.run 执行 shell 命令
@@ -69,12 +72,13 @@ def run(command: str) -> str:
 
         # 如果有输出就截断到 50000 字符（防止超长输出撑爆上下文窗口），
         # 没有输出则返回 "(no output)"
-        return (out[:50_000] if out else "(no output)")
+        return (out[:50_000] if out else "（无输出）")
 
     except subprocess.TimeoutExpired:
         # 命令执行超时（超过 120 秒）
-        return "Error: command timed out after 120s."
+        # Error: command timed out after 120s.
+        return "错误：命令执行超时（120 秒）。"
 
     except (FileNotFoundError, OSError) as e:
         # 命令不存在或操作系统错误（比如没有这个程序）
-        return f"Error: {e}"
+        return f"错误：{e}"

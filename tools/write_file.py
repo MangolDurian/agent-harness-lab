@@ -15,17 +15,20 @@ SCHEMA = {
     "type": "function",
     "function": {
         "name": "write_file",
-        "description": "Write content to a file within the working directory. Creates parent directories if needed.",
+        # "Write content to a file within the working directory. Creates parent directories if needed."
+        "description": "将内容写入工作目录内的文件，如需要会自动创建父目录。",
         "parameters": {
             "type": "object",
             "properties": {
                 "file_path": {
                     "type": "string",
-                    "description": "Path to the file to write. Can be absolute or relative to the working directory.",
+                    # "Path to the file to write. Can be absolute or relative to the working directory."
+                    "description": "要写入的文件路径，可以是绝对路径或相对于工作目录的路径。",
                 },
                 "content": {
                     "type": "string",
-                    "description": "The text content to write to the file.",
+                    # "The text content to write to the file."
+                    "description": "要写入文件的文本内容。",
                 },
             },
             "required": ["file_path", "content"],
@@ -50,7 +53,8 @@ def _resolve_safe(file_path: str) -> Path:
 
     if not str(target).startswith(str(_ROOT)):
         raise ValueError(
-            f"Path traversal blocked: '{file_path}' resolves outside the working directory."
+            # Path traversal blocked: '{file_path}' resolves outside the working directory.
+            f"路径穿越已拦截：'{file_path}' 解析到了工作目录之外。"
         )
     return target
 
@@ -69,13 +73,16 @@ def run(file_path: str, content: str) -> str:
     try:
         target = _resolve_safe(file_path)
     except ValueError as e:
-        return f"Error: {e}"
+        # Error: {e}
+        return f"错误：{e}"
 
     try:
         # 自动创建父目录（如果不存在）
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
     except OSError as e:
-        return f"Error: failed to write file: {e}"
+        # Error: failed to write file: {e}
+        return f"错误：文件写入失败：{e}"
 
-    return f"OK: wrote {len(content)} chars to {file_path}"
+    # OK: wrote {len(content)} chars to {file_path}
+    return f"成功：已将 {len(content)} 个字符写入 {file_path}"

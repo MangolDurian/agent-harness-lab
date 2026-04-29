@@ -25,9 +25,12 @@ from tools import bash
 
 # 系统提示词：告诉模型它的角色、工作目录和行为风格
 # f-string 中的 {os.getcwd()} 会被替换为当前工作目录的绝对路径
+# 原英文版：
+# f"You are a coding agent working at {os.getcwd()}. "
+# "Use the `bash` tool to accomplish the user's task. Act, don't over-explain."
 SYSTEM = (
-    f"You are a coding agent working at {os.getcwd()}. "
-    "Use the `bash` tool to accomplish the user's task. Act, don't over-explain."
+    f"你是一个在 {os.getcwd()} 工作的编程助手。"
+    "使用 bash 工具完成任务，直接行动，不要过度解释。"
 )
 
 # 工具列表：传给 API 的工具 schema 数组（OpenAI function calling 格式）
@@ -56,7 +59,7 @@ def _print_tool_call(name: str, args: dict, output: str) -> None:
         print(f"\033[33m[{name}] {args}\033[0m")
 
     # 打印工具输出，超长输出截断到 400 字符，避免刷屏
-    preview = output if len(output) < 400 else output[:400] + " ...(truncated)"
+    preview = output if len(output) < 400 else output[:400] + " ...（已截断）"
     print(preview)
 
 

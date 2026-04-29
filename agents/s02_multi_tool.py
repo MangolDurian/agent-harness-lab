@@ -21,9 +21,12 @@ from tools import read_file
 from tools import write_file
 
 # 系统提示词：告诉模型它有三个工具可用
+# 原英文版：
+# f"You are a coding agent working at {os.getcwd()}. "
+# "Use the available tools to accomplish the user's task. Act, don't over-explain."
 SYSTEM = (
-    f"You are a coding agent working at {os.getcwd()}. "
-    "Use the available tools to accomplish the user's task. Act, don't over-explain."
+    f"你是一个在 {os.getcwd()} 工作的编程助手。"
+    "使用可用工具完成任务，直接行动，不要过度解释。"
 )
 
 # 工具列表：比 s01 多了 read_file 和 write_file
@@ -58,7 +61,7 @@ def _print_tool_call(name: str, args: dict, output: str) -> None:
     else:
         print(f"\033[33m[{name}] {args}\033[0m")
 
-    preview = output if len(output) < 400 else output[:400] + " ...(truncated)"
+    preview = output if len(output) < 400 else output[:400] + " ...（已截断）"
     print(preview)
 
 
