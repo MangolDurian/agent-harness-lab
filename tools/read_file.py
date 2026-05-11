@@ -50,8 +50,8 @@ def _resolve_safe(file_path: str) -> Path:
     # resolve() 会消除 .. 和符号链接，得到真实绝对路径
     target = (Path(file_path).expanduser()).resolve()
 
-    # startswith 检查确保解析后的路径仍然在工作目录内
-    if not str(target).startswith(str(_ROOT)):
+    # is_relative_to 检查确保解析后的路径仍然在工作目录内
+    if not target.is_relative_to(_ROOT):
         raise ValueError(
             # Path traversal blocked: '{file_path}' resolves outside the working directory.
             f"路径穿越已拦截：'{file_path}' 解析到了工作目录之外。"

@@ -21,19 +21,23 @@ agent-harness-lab/
 │   ├── bash.py
 │   ├── read_file.py
 │   ├── write_file.py
-│   └── todo.py
+│   ├── todo.py
+│   └── subagent.py
 ├── agents/                     # 每课一个入口脚本
 │   ├── s01_agent_loop.py
 │   ├── s02_multi_tool.py
-│   └── s03_todo.py
+│   ├── s03_todo.py
+│   └── s04_subagent.py
 ├── docs/                       # 每课一份学习笔记
 │   ├── s01-notes.md
 │   ├── s02-notes.md
-│   └── s03-notes.md
+│   ├── s03-notes.md
+│   └── s04-notes.md
 ├── examples/                   # 每课一份阶段成果验证清单
 │   ├── s01_demo_prompts.md
 │   ├── s02_demo_prompts.md
-│   └── s03_demo_prompts.md
+│   ├── s03_demo_prompts.md
+│   └── s04_demo_prompts.md
 ├── .env.example
 ├── requirements.txt
 └── README.md
@@ -55,7 +59,7 @@ python agents/s01_agent_loop.py
 | s01 | Agent Loop | One loop & Bash is all you need | ✅ |
 | s02 | Tool Use | 加一个工具只加一个 handler | ✅ |
 | s03 | TodoWrite | 没有计划的 agent 走哪算哪 | ✅ |
-| s04 | Subagent | 大任务拆小，每个小任务干净的上下文 | ⬜ |
+| s04 | Subagent | 大任务拆小，每个小任务干净的上下文 | ✅ |
 | s05 | Skills | 用到什么知识，临时加载什么知识 | ⬜ |
 | s06 | Context Compact | 上下文总会满，要有办法腾地方 | ⬜ |
 | s07 | Task System | 大目标要拆成小任务，记在磁盘上 | ⬜ |
@@ -126,3 +130,21 @@ python agents/s01_agent_loop.py
 | Nag 实现方式 | 修改 agent_loop 内部，往 messages 注入 system reminder | handler wrapper 闭包，追加到工具输出尾部 |
 | 代码组织 | 单文件，TodoManager 和 handler 都内联 | `tools/todo.py` 独立模块 + `agents/` 组装 |
 | Todo schema 格式 | Anthropic input_schema | OpenAI function calling format |
+
+---
+
+## s04：Subagent（已完成）
+
+大任务拆小，每个小任务干净的上下文——delegate 工具启动嵌套 agent_loop，子 agent 拥有独立上下文。
+
+- 代码：[`agents/s04_subagent.py`](./agents/s04_subagent.py) + [`tools/subagent.py`](./tools/subagent.py)
+- 笔记：[`docs/s04-notes.md`](./docs/s04-notes.md)
+- 验证：[`examples/s04_demo_prompts.md`](./examples/s04_demo_prompts.md)
+
+### 相比原版的三个差异
+
+| 差异 | 原版 | 本项目 |
+|---|---|---|
+| 子 agent 定义位置 | 内联在 agent 入口中 | `tools/subagent.py` 独立模块 |
+| 回调传递方式 | 直接传参 | 模块级变量 `set_subagent_callback()` |
+| 层级可视化 | 无特殊区分 | 缩进 + 灰色（子）vs 黄色（主） |

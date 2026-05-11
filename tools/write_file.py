@@ -51,7 +51,7 @@ def _resolve_safe(file_path: str) -> Path:
     """
     target = (Path(file_path).expanduser()).resolve()
 
-    if not str(target).startswith(str(_ROOT)):
+    if not target.is_relative_to(_ROOT):
         raise ValueError(
             # Path traversal blocked: '{file_path}' resolves outside the working directory.
             f"路径穿越已拦截：'{file_path}' 解析到了工作目录之外。"
