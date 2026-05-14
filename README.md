@@ -38,6 +38,11 @@ agent-harness-lab/
 │   ├── s02_demo_prompts.md
 │   ├── s03_demo_prompts.md
 │   └── s04_demo_prompts.md
+├── run-records/                # 手动实跑记录 + 复盘
+│   └── s04-subagent-run-review.md
+├── run-outputs/                # 手动实跑产生的文件，避免污染 agents/
+│   ├── s03/
+│   └── s04/
 ├── .env.example
 ├── requirements.txt
 └── README.md
@@ -140,6 +145,7 @@ python agents/s01_agent_loop.py
 - 代码：[`agents/s04_subagent.py`](./agents/s04_subagent.py) + [`tools/subagent.py`](./tools/subagent.py)
 - 笔记：[`docs/s04-notes.md`](./docs/s04-notes.md)
 - 验证：[`examples/s04_demo_prompts.md`](./examples/s04_demo_prompts.md)
+- 实跑复盘：[`run-records/s04-subagent-run-review.md`](./run-records/s04-subagent-run-review.md)
 
 ### 相比原版的三个差异
 
