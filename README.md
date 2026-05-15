@@ -22,22 +22,30 @@ agent-harness-lab/
 │   ├── read_file.py
 │   ├── write_file.py
 │   ├── todo.py
-│   └── subagent.py
+│   ├── subagent.py
+│   └── skill.py
+├── skills/                     # 技能定义（markdown 文件），s05 新增
+│   ├── git.md
+│   ├── debug.md
+│   └── refactor.md
 ├── agents/                     # 每课一个入口脚本
 │   ├── s01_agent_loop.py
 │   ├── s02_multi_tool.py
 │   ├── s03_todo.py
-│   └── s04_subagent.py
+│   ├── s04_subagent.py
+│   └── s05_skills.py
 ├── docs/                       # 每课一份学习笔记
 │   ├── s01-notes.md
 │   ├── s02-notes.md
 │   ├── s03-notes.md
-│   └── s04-notes.md
+│   ├── s04-notes.md
+│   └── s05-notes.md
 ├── examples/                   # 每课一份阶段成果验证清单
 │   ├── s01_demo_prompts.md
 │   ├── s02_demo_prompts.md
 │   ├── s03_demo_prompts.md
-│   └── s04_demo_prompts.md
+│   ├── s04_demo_prompts.md
+│   └── s05_demo_prompts.md
 ├── run-records/                # 手动实跑记录 + 复盘
 │   └── s04-subagent-run-review.md
 ├── run-outputs/                # 手动实跑产生的文件，避免污染 agents/
@@ -65,7 +73,7 @@ python agents/s01_agent_loop.py
 | s02 | Tool Use | 加一个工具只加一个 handler | ✅ |
 | s03 | TodoWrite | 没有计划的 agent 走哪算哪 | ✅ |
 | s04 | Subagent | 大任务拆小，每个小任务干净的上下文 | ✅ |
-| s05 | Skills | 用到什么知识，临时加载什么知识 | ⬜ |
+| s05 | Skills | 用到什么知识，临时加载什么知识 | ✅ |
 | s06 | Context Compact | 上下文总会满，要有办法腾地方 | ⬜ |
 | s07 | Task System | 大目标要拆成小任务，记在磁盘上 | ⬜ |
 | s08 | Background Tasks | 慢操作丢后台，agent 继续想下一步 | ⬜ |
@@ -154,3 +162,21 @@ python agents/s01_agent_loop.py
 | 子 agent 定义位置 | 内联在 agent 入口中 | `tools/subagent.py` 独立模块 |
 | 回调传递方式 | 直接传参 | 模块级变量 `set_subagent_callback()` |
 | 层级可视化 | 无特殊区分 | 缩进 + 灰色（子）vs 黄色（主） |
+
+---
+
+## s05：Skills（已完成）
+
+用到什么知识，临时加载什么知识——load_skill 按需加载 markdown 技能文件，不把所有知识塞进系统提示词。
+
+- 代码：[`agents/s05_skills.py`](./agents/s05_skills.py) + [`tools/skill.py`](./tools/skill.py) + [`skills/`](./skills/)
+- 笔记：[`docs/s05-notes.md`](./docs/s05-notes.md)
+- 验证：[`examples/s05_demo_prompts.md`](./examples/s05_demo_prompts.md)
+
+### 相比原版的三个差异
+
+| 差异 | 原版 | 本项目 |
+|---|---|---|
+| 技能格式 | JSON/YAML 结构化定义 | 纯 markdown 文件 |
+| 工具设计 | 列出/加载分为两个工具 | 一个 load_skill 处理两种情况 |
+| 技能发现 | 注册表或硬编码列表 | 自动扫描 skills/ 目录 |

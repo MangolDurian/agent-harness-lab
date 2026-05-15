@@ -8,7 +8,7 @@
   主 agent 调用 delegate(task) → 本工具启动一个新的 agent_loop →
   子 agent 用自己的上下文和工具执行 → 返回文字结果给主 agent
 
-子 agent 的工具集只有 bash / read_file / write_file，不含 delegate 本身，
+子 agent 的工具集包含 bash / read_file / write_file / load_skill，不含 delegate 本身，
 防止无限递归（子 agent 再生孙子 agent）。
 """
 from __future__ import annotations
@@ -17,25 +17,27 @@ from __future__ import annotations
 from core.loop import agent_loop
 
 # 子 agent 可用的基础工具（不含 delegate，防止递归）
-from tools import bash, read_file, write_file
+from tools import bash, read_file, write_file, skill
 
 # ---- 子 agent 配置 ----
 
-# 子 agent 的系统提示词：简短、聚焦、不加 todo 等高层机制
+# 子 agent 的系统提示词：简短、聚焦，不加 todo/delegate 等高层机制
 _SUB_SYSTEM = (
     "你是一个子 agent，负责独立完成被委托的特定任务。\n"
-    "使用可用工具（bash、read_file、write_file）高效完成任务，\n"
+    "使用可用工具（bash、read_file、write_file、load_skill）高效完成任务，\n"
+    "遇到不熟悉的领域时先调用 load_skill 加载相关技能。\n"
     "完成后用简洁的文字总结结果。不要过度解释，直接行动。"
 )
 
 # 子 agent 的工具列表（比主 agent 少，聚焦执行而非规划）
-_SUB_TOOLS = [bash.SCHEMA, read_file.SCHEMA, write_file.SCHEMA]
+_SUB_TOOLS = [bash.SCHEMA, read_file.SCHEMA, write_file.SCHEMA, skill.SCHEMA]
 
 # 子 agent 的工具处理函数映射
 _SUB_HANDLERS = {
     "bash": bash.run,
     "read_file": read_file.run,
     "write_file": write_file.run,
+    "load_skill": skill.run,
 }
 
 # 子 agent 最大循环轮次（比主 agent 少，防止子任务失控）
@@ -69,7 +71,7 @@ SCHEMA = {
         # "将子任务委托给独立的子 agent 执行。子 agent 拥有全新的上下文和独立工具集。"
         "description": (
             "将子任务委托给独立的子 agent 执行。"
-            "子 agent 拥有全新的上下文和工具集（bash、read_file、write_file），"
+            "子 agent 拥有全新的上下文和工具集（bash、read_file、write_file、load_skill），"
             "执行完毕后返回结果摘要。适用于需要独立隔离执行的多步操作。"
         ),
         "parameters": {
