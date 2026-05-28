@@ -1,0 +1,797 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Harness Debugger</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=Noto+Sans+SC:wght@300;400;500;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --ink: #0a1f3d;
+  --ink-rgb: 10, 31, 61;
+  --ink-tint: #152a4a;
+  --paper: #f1f3f5;
+  --paper-rgb: 241, 243, 245;
+  --mono: "IBM Plex Mono", ui-monospace, monospace;
+  --sans: "Noto Sans SC", source-han-sans-sc, sans-serif;
+  --tool-bash: #e6a817;
+  --tool-read: #4a90d9;
+  --tool-write: #3dae7a;
+  --tool-todo: #9b59b6;
+  --tool-delegate: #e07ba8;
+  --tool-skill: #2db5b5;
+  --tool-default: #8899aa;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: var(--sans);
+  background: var(--ink);
+  color: var(--paper);
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---- Top Bar ---- */
+.top-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+  height: 48px;
+  min-height: 48px;
+  background: rgba(var(--ink-rgb), .92);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-bottom: 1px solid rgba(var(--paper-rgb), .08);
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.top-bar .title {
+  font-weight: 600;
+  letter-spacing: .03em;
+  color: rgba(var(--paper-rgb), .9);
+}
+
+.top-bar .stats {
+  display: flex;
+  gap: 16px;
+  color: rgba(var(--paper-rgb), .45);
+  font-size: 12px;
+}
+
+.top-bar .stats .val {
+  color: rgba(var(--paper-rgb), .75);
+  font-weight: 500;
+}
+
+/* ---- Main Layout ---- */
+.main-area {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+/* ---- Todo Sidebar ---- */
+.todo-panel {
+  width: 240px;
+  min-width: 240px;
+  background: rgba(var(--ink-rgb), .6);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-right: 1px solid rgba(var(--paper-rgb), .06);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.todo-header {
+  padding: 16px 16px 12px;
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: rgba(var(--paper-rgb), .4);
+  border-bottom: 1px solid rgba(var(--paper-rgb), .06);
+}
+
+.todo-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 0;
+}
+
+.todo-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 16px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: rgba(var(--paper-rgb), .7);
+  animation: fadeSlideIn .3s cubic-bezier(.22,1,.36,1) both;
+}
+
+.todo-item .icon {
+  flex-shrink: 0;
+  width: 18px;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.todo-item.pending .icon { color: rgba(var(--paper-rgb), .3); }
+.todo-item.in_progress .icon { color: var(--tool-todo); }
+.todo-item.in_progress { color: rgba(var(--paper-rgb), .95); }
+.todo-item.completed .icon { color: rgba(var(--paper-rgb), .25); }
+.todo-item.completed { color: rgba(var(--paper-rgb), .35); text-decoration: line-through; }
+
+.todo-empty {
+  padding: 24px 16px;
+  text-align: center;
+  color: rgba(var(--paper-rgb), .25);
+  font-size: 13px;
+}
+
+/* ---- Chat Panel ---- */
+.chat-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  scroll-behavior: smooth;
+}
+
+.msg {
+  animation: fadeSlideIn .35s cubic-bezier(.22,1,.36,1) both;
+  max-width: 100%;
+}
+
+.msg-user {
+  align-self: flex-end;
+  background: rgba(var(--paper-rgb), .1);
+  border-radius: 12px 12px 4px 12px;
+  padding: 10px 16px;
+  max-width: 70%;
+  font-size: 14px;
+  color: rgba(var(--paper-rgb), .9);
+}
+
+.msg-assistant {
+  align-self: flex-start;
+  font-size: 14px;
+  line-height: 1.7;
+  color: rgba(var(--paper-rgb), .85);
+  max-width: 85%;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.msg-assistant .label {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: rgba(var(--paper-rgb), .35);
+  margin-bottom: 6px;
+}
+
+/* ---- Tool Cards ---- */
+.tool-card {
+  background: rgba(var(--paper-rgb), .04);
+  border: 1px solid rgba(var(--paper-rgb), .06);
+  border-left: 3px solid var(--tool-color, var(--tool-default));
+  border-radius: 6px;
+  padding: 10px 14px;
+  cursor: pointer;
+  transition: background .15s, border-color .15s;
+  max-width: 85%;
+  align-self: flex-start;
+  animation: fadeSlideIn .3s cubic-bezier(.22,1,.36,1) both;
+}
+
+.tool-card:hover {
+  background: rgba(var(--paper-rgb), .08);
+}
+
+.tool-card.selected {
+  background: rgba(var(--paper-rgb), .1);
+  border-color: rgba(var(--paper-rgb), .15);
+  border-left-color: var(--tool-color, var(--tool-default));
+}
+
+.tool-card .tool-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.tool-card .tool-name {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--tool-color, var(--tool-default));
+  text-transform: uppercase;
+  letter-spacing: .03em;
+}
+
+.tool-card .tool-args {
+  font-size: 13px;
+  color: rgba(var(--paper-rgb), .6);
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-height: 40px;
+}
+
+.tool-card .tool-output-preview {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: rgba(var(--paper-rgb), .35);
+  margin-top: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-height: 20px;
+}
+
+/* Sub-agent cards: indented + semi-transparent */
+.tool-card.sub-agent {
+  margin-left: 24px;
+  opacity: .75;
+  border-left-style: dashed;
+}
+
+.tool-card.sub-agent .tool-name::before {
+  content: "↳ ";
+  opacity: .5;
+}
+
+/* ---- Detail Panel ---- */
+.detail-panel {
+  width: 360px;
+  min-width: 360px;
+  background: rgba(var(--ink-rgb), .6);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-left: 1px solid rgba(var(--paper-rgb), .06);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.detail-header {
+  padding: 16px 16px 12px;
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: rgba(var(--paper-rgb), .4);
+  border-bottom: 1px solid rgba(var(--paper-rgb), .06);
+}
+
+.detail-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+.detail-empty {
+  color: rgba(var(--paper-rgb), .2);
+  font-size: 13px;
+  text-align: center;
+  padding-top: 40px;
+}
+
+.detail-section {
+  margin-bottom: 16px;
+}
+
+.detail-section .detail-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: rgba(var(--paper-rgb), .35);
+  margin-bottom: 6px;
+}
+
+.detail-section .detail-value {
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.6;
+  color: rgba(var(--paper-rgb), .8);
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: rgba(var(--paper-rgb), .04);
+  border-radius: 4px;
+  padding: 10px 12px;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.detail-section .detail-value.args-view {
+  white-space: pre-wrap;
+}
+
+/* ---- Bottom Bar ---- */
+.bottom-bar {
+  border-top: 1px solid rgba(var(--paper-rgb), .06);
+  background: rgba(var(--ink-rgb), .92);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.status-line {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 4px 20px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: rgba(var(--paper-rgb), .3);
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #e74c3c;
+  transition: background .3s;
+}
+
+.status-dot.connected { background: #2ecc71; }
+
+.input-row {
+  display: flex;
+  gap: 8px;
+  padding: 8px 20px 12px;
+}
+
+.input-row input {
+  flex: 1;
+  background: rgba(var(--paper-rgb), .06);
+  border: 1px solid rgba(var(--paper-rgb), .1);
+  border-radius: 8px;
+  padding: 10px 16px;
+  font-family: var(--sans);
+  font-size: 14px;
+  color: var(--paper);
+  outline: none;
+  transition: border-color .2s;
+}
+
+.input-row input:focus {
+  border-color: rgba(var(--paper-rgb), .25);
+}
+
+.input-row input::placeholder {
+  color: rgba(var(--paper-rgb), .25);
+}
+
+.input-row button {
+  background: rgba(var(--paper-rgb), .1);
+  border: 1px solid rgba(var(--paper-rgb), .12);
+  border-radius: 8px;
+  padding: 10px 20px;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: rgba(var(--paper-rgb), .8);
+  cursor: pointer;
+  transition: background .15s;
+}
+
+.input-row button:hover {
+  background: rgba(var(--paper-rgb), .16);
+}
+
+.input-row button:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+
+/* ---- Processing Indicator ---- */
+.processing-bar {
+  height: 2px;
+  background: transparent;
+  transition: background .3s;
+  overflow: hidden;
+}
+
+.processing-bar.active {
+  background: rgba(var(--paper-rgb), .06);
+}
+
+.processing-bar.active::after {
+  content: "";
+  display: block;
+  height: 100%;
+  width: 30%;
+  background: linear-gradient(90deg, transparent, rgba(var(--paper-rgb), .3), transparent);
+  animation: processingSlide 1.2s ease-in-out infinite;
+}
+
+/* ---- Scrollbar ---- */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(var(--paper-rgb), .12); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(var(--paper-rgb), .2); }
+
+/* ---- Animations ---- */
+@keyframes fadeSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes processingSlide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
+</style>
+</head>
+<body>
+
+<!-- Top Bar -->
+<div class="top-bar">
+  <div class="title">Agent Harness Debugger <span id="version-tag" style="opacity:.4;font-weight:400;margin-left:8px"></span></div>
+  <div class="stats">
+    <span>turns <span class="val" id="stat-turns">0</span></span>
+    <span>tools <span class="val" id="stat-tools">0</span></span>
+  </div>
+</div>
+
+<!-- Main Area -->
+<div class="main-area">
+  <!-- Todo Sidebar -->
+  <div class="todo-panel">
+    <div class="todo-header">TODO</div>
+    <div class="todo-list" id="todo-list">
+      <div class="todo-empty" id="todo-empty">no tasks yet</div>
+    </div>
+  </div>
+
+  <!-- Chat Panel -->
+  <div class="chat-panel">
+    <div class="processing-bar" id="processing-bar"></div>
+    <div class="chat-messages" id="chat-messages"></div>
+  </div>
+
+  <!-- Detail Panel -->
+  <div class="detail-panel">
+    <div class="detail-header">TOOL DETAIL</div>
+    <div class="detail-content" id="detail-content">
+      <div class="detail-empty">click a tool card to inspect</div>
+    </div>
+  </div>
+</div>
+
+<!-- Bottom Bar -->
+<div class="bottom-bar">
+  <div class="status-line">
+    <span class="status-dot" id="status-dot"></span>
+    <span id="status-text">disconnected</span>
+    <span id="status-msgs">0 msgs</span>
+    <span id="status-tool-calls">0 tool calls</span>
+  </div>
+  <div class="input-row">
+    <input type="text" id="input" placeholder="type a message..." autocomplete="off">
+    <button id="send-btn">Send</button>
+  </div>
+</div>
+
+<script>
+// ---- State ----
+let ws = null;
+let toolCallCount = 0;
+let turnCount = 0;
+let msgCount = 0;
+let isProcessing = false;
+let selectedCard = null;
+let userScrolled = false;
+// Track delegate nesting: when a delegate tool_call comes, subsequent sub_tool_calls
+// belong to it until the next non-sub event or processing_end
+let currentDelegateEl = null;
+
+const chatEl = document.getElementById("chat-messages");
+const inputEl = document.getElementById("input");
+const sendBtn = document.getElementById("send-btn");
+const processingBar = document.getElementById("processing-bar");
+const todoListEl = document.getElementById("todo-list");
+const todoEmptyEl = document.getElementById("todo-empty");
+const detailEl = document.getElementById("detail-content");
+const statusDot = document.getElementById("status-dot");
+const statusText = document.getElementById("status-text");
+const statusMsgs = document.getElementById("status-msgs");
+const statusToolCalls = document.getElementById("status-tool-calls");
+const statTurns = document.getElementById("stat-turns");
+const statTools = document.getElementById("stat-tools");
+
+// ---- Tool color mapping ----
+const TOOL_COLORS = {
+  bash: "var(--tool-bash)",
+  read_file: "var(--tool-read)",
+  write_file: "var(--tool-write)",
+  todo_write: "var(--tool-todo)",
+  delegate: "var(--tool-delegate)",
+  load_skill: "var(--tool-skill)",
+};
+
+// ---- WebSocket ----
+function connect() {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  ws = new WebSocket(`${proto}//${location.host}/ws`);
+
+  ws.onopen = () => {
+    statusDot.classList.add("connected");
+    statusText.textContent = "connected";
+  };
+
+  ws.onclose = () => {
+    statusDot.classList.remove("connected");
+    statusText.textContent = "disconnected";
+    setTimeout(connect, 2000);
+  };
+
+  ws.onerror = () => {};
+
+  ws.onmessage = (e) => {
+    const data = JSON.parse(e.data);
+    handleEvent(data);
+  };
+}
+
+// ---- Send ----
+function sendMessage() {
+  const text = inputEl.value.trim();
+  if (!text || !ws || ws.readyState !== WebSocket.OPEN || isProcessing) return;
+  ws.send(JSON.stringify({ type: "user_message", content: text }));
+  inputEl.value = "";
+  appendUserMsg(text);
+  msgCount++;
+  updateStatus();
+}
+
+sendBtn.addEventListener("click", sendMessage);
+inputEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+});
+
+// ---- Scroll tracking ----
+chatEl.addEventListener("scroll", () => {
+  const atBottom = chatEl.scrollHeight - chatEl.scrollTop - chatEl.clientHeight < 40;
+  userScrolled = !atBottom;
+});
+
+function scrollToBottom() {
+  if (!userScrolled) {
+    chatEl.scrollTop = chatEl.scrollHeight;
+  }
+}
+
+// ---- Event handling ----
+function handleEvent(data) {
+  switch (data.type) {
+    case "processing_start":
+      isProcessing = true;
+      processingBar.classList.add("active");
+      sendBtn.disabled = true;
+      currentDelegateEl = null;
+      break;
+
+    case "tool_call":
+      toolCallCount++;
+      appendToolCard(data, false);
+      if (data.todo_state) updateTodo(data.todo_state);
+      scrollToBottom();
+      break;
+
+    case "sub_tool_call":
+      appendToolCard(data, true);
+      scrollToBottom();
+      break;
+
+    case "processing_end":
+      isProcessing = false;
+      processingBar.classList.remove("active");
+      sendBtn.disabled = false;
+      turnCount = data.turn_count || turnCount;
+      if (data.assistant_text) {
+        appendAssistantMsg(data.assistant_text);
+        msgCount++;
+      }
+      currentDelegateEl = null;
+      updateStatus();
+      scrollToBottom();
+      break;
+
+    case "error":
+      isProcessing = false;
+      processingBar.classList.remove("active");
+      sendBtn.disabled = false;
+      appendErrorMsg(data.message || "unknown error");
+      scrollToBottom();
+      break;
+  }
+  updateStatus();
+}
+
+// ---- DOM helpers ----
+function appendUserMsg(text) {
+  const el = document.createElement("div");
+  el.className = "msg msg-user";
+  el.textContent = text;
+  chatEl.appendChild(el);
+  scrollToBottom();
+}
+
+function appendAssistantMsg(text) {
+  const el = document.createElement("div");
+  el.className = "msg msg-assistant";
+  el.innerHTML = '<div class="label">assistant</div>' + escapeHtml(text);
+  chatEl.appendChild(el);
+}
+
+function appendErrorMsg(text) {
+  const el = document.createElement("div");
+  el.className = "msg msg-user";
+  el.style.background = "rgba(231,76,60,.15)";
+  el.textContent = "Error: " + text;
+  chatEl.appendChild(el);
+}
+
+function appendToolCard(data, isSub) {
+  const el = document.createElement("div");
+  const color = TOOL_COLORS[data.name] || "var(--tool-default)";
+  el.className = "tool-card" + (isSub ? " sub-agent" : "");
+  el.style.setProperty("--tool-color", color);
+
+  const argsPreview = formatArgsPreview(data.name, data.args);
+  const outputPreview = truncate(data.output || "", 80);
+
+  el.innerHTML =
+    '<div class="tool-header">' +
+      '<span class="tool-name">' + escapeHtml(data.name) + '</span>' +
+    '</div>' +
+    (argsPreview ? '<div class="tool-args">' + escapeHtml(argsPreview) + '</div>' : '') +
+    (outputPreview ? '<div class="tool-output-preview">' + escapeHtml(outputPreview) + '</div>' : '');
+
+  el.dataset.toolData = JSON.stringify(data);
+
+  el.addEventListener("click", () => {
+    if (selectedCard) selectedCard.classList.remove("selected");
+    el.classList.add("selected");
+    selectedCard = el;
+    showDetail(data);
+  });
+
+  // If this is a delegate card, track it as container for sub_tool_calls
+  if (data.name === "delegate" && !isSub) {
+    currentDelegateEl = el;
+    chatEl.appendChild(el);
+    return;
+  }
+
+  // Sub-agent calls nest under the delegate card visually
+  if (isSub && currentDelegateEl) {
+    currentDelegateEl.after(el);
+    return;
+  }
+
+  chatEl.appendChild(el);
+}
+
+function formatArgsPreview(name, args) {
+  if (!args) return "";
+  switch (name) {
+    case "bash": return "$ " + (args.command || "");
+    case "read_file": return args.file_path || "";
+    case "write_file": return (args.file_path || "") + " (" + ((args.content || "").split("\n").length) + " lines)";
+    case "todo_write": {
+      const items = args.items || [];
+      return items.length + " items";
+    }
+    case "delegate": return truncate(args.task || "", 80);
+    case "load_skill": return args.name || "";
+    default: return JSON.stringify(args).slice(0, 80);
+  }
+}
+
+function showDetail(data) {
+  const color = TOOL_COLORS[data.name] || "var(--tool-default)";
+  let html = '';
+
+  html += '<div class="detail-section">';
+  html += '<div class="detail-label">Tool</div>';
+  html += '<div class="detail-value" style="color:' + color + ';font-weight:500">' + escapeHtml(data.name) + '</div>';
+  html += '</div>';
+
+  html += '<div class="detail-section">';
+  html += '<div class="detail-label">Arguments</div>';
+  html += '<div class="detail-value args-view">' + escapeHtml(JSON.stringify(data.args, null, 2)) + '</div>';
+  html += '</div>';
+
+  html += '<div class="detail-section">';
+  html += '<div class="detail-label">Output</div>';
+  html += '<div class="detail-value">' + escapeHtml(data.output || "(empty)") + '</div>';
+  html += '</div>';
+
+  detailEl.innerHTML = html;
+}
+
+// ---- Todo ----
+function updateTodo(items) {
+  if (!items || !items.length) {
+    todoListEl.innerHTML = '<div class="todo-empty">no tasks yet</div>';
+    return;
+  }
+
+  const icons = { pending: "[ ]", in_progress: "[~]", completed: "[x]" };
+  todoListEl.innerHTML = items.map((item, i) => {
+    const icon = icons[item.status] || "[?]";
+    const cls = item.status || "pending";
+    return `<div class="todo-item ${cls}" style="animation-delay:${i * 40}ms">` +
+      `<span class="icon">${icon}</span>` +
+      `<span class="text">${escapeHtml(item.text)}</span>` +
+    '</div>';
+  }).join("");
+}
+
+// ---- Status ----
+function updateStatus() {
+  statTurns.textContent = turnCount;
+  statTools.textContent = toolCallCount;
+  statusMsgs.textContent = msgCount + " msgs";
+  statusToolCalls.textContent = toolCallCount + " tool calls";
+}
+
+// ---- Util ----
+function escapeHtml(s) {
+  const d = document.createElement("div");
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function truncate(s, n) {
+  if (!s) return "";
+  return s.length > n ? s.slice(0, n) + "..." : s;
+}
+
+// ---- Init ----
+connect();
+inputEl.focus();
+
+// Fetch version tag
+fetch("/api/version").then(r => r.json()).then(d => {
+  document.getElementById("version-tag").textContent = d.tag || "";
+}).catch(() => {});
+</script>
+</body>
+</html>
