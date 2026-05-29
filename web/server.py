@@ -3,6 +3,7 @@
 
 在浏览器中实时展示 agent 的工具调用、todo 状态、子 agent 层级等信息。
 通过 threading + queue 桥接同步的 agent_loop 到 async WebSocket。
+支持前端切换 s01~s06 不同阶段。
 
 运行方式：
     source .venv/bin/activate
@@ -13,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import sys
 import threading
@@ -29,59 +31,171 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
 from core.loop import agent_loop
-from tools import bash, read_file, write_file, todo, subagent, skill
-import functools
+from tools import bash, read_file, write_file, todo, subagent, skill, compact
 
-# ---- 复用 s05 的配置（不复制代码，直接导入） ----
-
-SYSTEM = (
-    f"你是一个在 {Path.cwd()} 工作的编程助手。"
-    "使用可用工具完成任务，直接行动，不要过度解释。\n\n"
-    "## 任务追踪（todo_write）\n"
-    "收到多步骤任务时：\n"
-    "1. 先调用 todo_write 制定完整计划（所有项设为 'pending'）。\n"
-    "2. 开始执行某项前，将其标记为 'in_progress'。\n"
-    "3. 完成后标记为 'completed'。\n"
-    "4. 每次调用都传入全部项（全量替换，非增量更新）。\n"
-    "同一时刻只能有一项 'in_progress'。\n\n"
-    "## 任务委托（delegate）\n"
-    "当遇到可以独立完成的子任务时，用 delegate 委托给子 agent：\n"
-    "- 子 agent 拥有全新的上下文，适合隔离执行\n"
-    "- 子 agent 只能用 bash、read_file、write_file（不能再 delegate）\n"
-    "- 在 task 参数中清楚描述要做什么即可\n\n"
-    "## 技能加载（load_skill）\n"
-    "遇到以下场景时，先调用 load_skill 加载相关技能：\n"
-    "- 需要操作 git 时 → load_skill(\"git\")\n"
-    "- 需要排查 bug 时 → load_skill(\"debug\")\n"
-    "- 需要重构代码时 → load_skill(\"refactor\")\n"
-    "加载后会获得专业知识和操作指引，然后按照指引执行任务。\n"
-    "如果不确定有哪些技能，随便传一个名称，会返回可用列表。"
-)
-
-TOOLS = [
-    bash.SCHEMA,
-    read_file.SCHEMA,
-    write_file.SCHEMA,
-    todo.SCHEMA,
-    subagent.SCHEMA,
-    skill.SCHEMA,
-]
-
-_BASE_HANDLERS = {
-    "bash": bash.run,
-    "read_file": read_file.run,
-    "write_file": write_file.run,
-    "todo_write": todo.run,
-    "delegate": subagent.run,
-    "load_skill": skill.run,
-}
+# ---- Stage Registry（s01 ~ s06 逐层叠加）----
 
 
-# ---- Nag Wrapper（从 s05 复用） ----
+def _build_stages() -> dict:
+    """构建阶段配置注册表。每个阶段在前一阶段基础上叠加新能力。"""
+    base = f"你是一个在 {Path.cwd()} 工作的编程助手。"
+
+    # SYSTEM prompt 各段落
+    _bash_only = "使用 bash 工具完成任务，直接行动，不要过度解释。"
+    _multi_tool = "使用可用工具完成任务，直接行动，不要过度解释。"
+    _todo = (
+        "\n\n## 任务追踪（todo_write）\n"
+        "收到多步骤任务时：\n"
+        "1. 先调用 todo_write 制定完整计划（所有项设为 'pending'）。\n"
+        "2. 开始执行某项前，将其标记为 'in_progress'。\n"
+        "3. 完成后标记为 'completed'。\n"
+        "4. 每次调用都传入全部项（全量替换，非增量更新）。\n"
+        "同一时刻只能有一项 'in_progress'。"
+    )
+    _delegate = (
+        "\n\n## 任务委托（delegate）\n"
+        "当遇到可以独立完成的子任务时，用 delegate 委托给子 agent：\n"
+        "- 子 agent 拥有全新的上下文，适合隔离执行\n"
+        "- 子 agent 可用工具：bash、read_file、write_file、load_skill（不能再 delegate）\n"
+        "- 在 task 参数中清楚描述要做什么即可"
+    )
+    _skill = (
+        "\n\n## 技能加载（load_skill）\n"
+        "遇到以下场景时，先调用 load_skill 加载相关技能：\n"
+        '- 需要操作 git 时 → load_skill("git")\n'
+        '- 需要排查 bug 时 → load_skill("debug")\n'
+        '- 需要重构代码时 → load_skill("refactor")\n'
+        "加载后会获得专业知识和操作指引，然后按照指引执行任务。\n"
+        "如果不确定有哪些技能，随便传一个名称，会返回可用列表。"
+    )
+    _compact = (
+        "\n\n## 上下文压缩（compact）\n"
+        "系统会自动压缩旧的工具输出（micro_compact）并在上下文过长时自动摘要（auto_compact）。\n"
+        "当你感觉对话历史冗余、模型似乎遗忘早期信息时，也可以主动调用 compact 手动触发压缩。"
+    )
+
+    stages = {}
+
+    # s01: bash only
+    stages["s01"] = {
+        "tag": "s01 Agent Loop",
+        "system": base + _bash_only,
+        "tools": [bash.SCHEMA],
+        "handlers": {"bash": bash.run},
+        "use_nag": False,
+        "use_subagent": False,
+        "use_compact": False,
+    }
+
+    # s02: + read_file, write_file
+    stages["s02"] = {
+        "tag": "s02 Multi Tool",
+        "system": base + _multi_tool,
+        "tools": [bash.SCHEMA, read_file.SCHEMA, write_file.SCHEMA],
+        "handlers": {
+            "bash": bash.run,
+            "read_file": read_file.run,
+            "write_file": write_file.run,
+        },
+        "use_nag": False,
+        "use_subagent": False,
+        "use_compact": False,
+    }
+
+    # s03: + todo + nag
+    stages["s03"] = {
+        "tag": "s03 TodoWrite",
+        "system": base + _multi_tool + _todo,
+        "tools": [bash.SCHEMA, read_file.SCHEMA, write_file.SCHEMA, todo.SCHEMA],
+        "handlers": {
+            "bash": bash.run,
+            "read_file": read_file.run,
+            "write_file": write_file.run,
+            "todo_write": todo.run,
+        },
+        "use_nag": True,
+        "use_subagent": False,
+        "use_compact": False,
+    }
+
+    # s04: + subagent
+    stages["s04"] = {
+        "tag": "s04 Subagent",
+        "system": base + _multi_tool + _todo + _delegate,
+        "tools": [
+            bash.SCHEMA, read_file.SCHEMA, write_file.SCHEMA,
+            todo.SCHEMA, subagent.SCHEMA,
+        ],
+        "handlers": {
+            "bash": bash.run,
+            "read_file": read_file.run,
+            "write_file": write_file.run,
+            "todo_write": todo.run,
+            "delegate": subagent.run,
+        },
+        "use_nag": True,
+        "use_subagent": True,
+        "use_compact": False,
+    }
+
+    # s05: + skill
+    stages["s05"] = {
+        "tag": "s05 Skills",
+        "system": base + _multi_tool + _todo + _delegate + _skill,
+        "tools": [
+            bash.SCHEMA, read_file.SCHEMA, write_file.SCHEMA,
+            todo.SCHEMA, subagent.SCHEMA, skill.SCHEMA,
+        ],
+        "handlers": {
+            "bash": bash.run,
+            "read_file": read_file.run,
+            "write_file": write_file.run,
+            "todo_write": todo.run,
+            "delegate": subagent.run,
+            "load_skill": skill.run,
+        },
+        "use_nag": True,
+        "use_subagent": True,
+        "use_compact": False,
+    }
+
+    # s06: + compact
+    stages["s06"] = {
+        "tag": "s06 Context Compact",
+        "system": base + _multi_tool + _todo + _delegate + _skill + _compact,
+        "tools": [
+            bash.SCHEMA, read_file.SCHEMA, write_file.SCHEMA,
+            todo.SCHEMA, subagent.SCHEMA, skill.SCHEMA, compact.SCHEMA,
+        ],
+        "handlers": {
+            "bash": bash.run,
+            "read_file": read_file.run,
+            "write_file": write_file.run,
+            "todo_write": todo.run,
+            "delegate": subagent.run,
+            "load_skill": skill.run,
+            "compact": compact.run,
+        },
+        "use_nag": True,
+        "use_subagent": True,
+        "use_compact": True,
+    }
+
+    return stages
 
 
-def _make_nagging_handlers(base_handlers: dict) -> dict:
-    """包装所有 handler，加入 nag 提醒机制。"""
+STAGES = _build_stages()
+DEFAULT_STAGE = "s06"
+
+
+# ---- Nag Wrapper（支持 stage 差异化）----
+
+
+def _make_nagging_handlers(base_handlers: dict, use_compact: bool = False) -> dict:
+    """包装所有 handler，加入 nag 提醒机制。
+
+    todo_write 重置计数器；compact（如果存在）不计入计数；其余正常计数。
+    """
     tool_calls_since_todo = [0]
     _NAG_THRESHOLD = 3
 
@@ -115,6 +229,8 @@ def _make_nagging_handlers(base_handlers: dict) -> dict:
     for name, handler in base_handlers.items():
         if name == "todo_write":
             wrapped[name] = _todo_wrap(handler)
+        elif name == "compact":
+            wrapped[name] = handler  # compact 不计入 nag 计数
         else:
             wrapped[name] = _wrap(handler)
     return wrapped
@@ -122,44 +238,45 @@ def _make_nagging_handlers(base_handlers: dict) -> dict:
 
 # ---- WebSocket 事件桥接 ----
 
-# 使用 queue + threading 把同步 agent_loop 桥接到 async WebSocket
-# agent_loop 在子线程运行，通过 queue 发送事件
-# 主线程的 async handler 从 queue 取事件推送到 WebSocket
-
 
 def _run_agent_in_thread(
     messages: list,
     event_queue: Queue,
+    stage_cfg: dict,
 ):
     """在子线程中运行 agent_loop，通过 queue 推送事件。"""
 
     def on_tool_call(name: str, args: dict, output: str):
         event = {"type": "tool_call", "name": name, "args": args, "output": output}
 
-        # 拦截 todo_write 参数，附带当前 todo 状态
         if name == "todo_write":
             event["todo_state"] = args.get("items", [])
 
         event_queue.put(event)
 
+        if stage_cfg["use_compact"]:
+            compact.check_and_compact(messages)
+
     def on_sub_tool_call(name: str, args: dict, output: str):
         event = {"type": "sub_tool_call", "name": name, "args": args, "output": output}
         event_queue.put(event)
 
-    # 设置子 agent 回调
-    subagent.set_subagent_callback(on_sub_tool_call)
+    if stage_cfg["use_subagent"]:
+        subagent.set_subagent_callback(on_sub_tool_call)
 
-    handlers = _make_nagging_handlers(_BASE_HANDLERS)
+    if stage_cfg["use_nag"]:
+        handlers = _make_nagging_handlers(stage_cfg["handlers"], stage_cfg["use_compact"])
+    else:
+        handlers = dict(stage_cfg["handlers"])
 
     stop_reason = agent_loop(
         messages,
-        system=SYSTEM,
-        tools=TOOLS,
+        system=stage_cfg["system"],
+        tools=stage_cfg["tools"],
         handlers=handlers,
         on_tool_call=on_tool_call,
     )
 
-    # 提取最后的 assistant 文本
     assistant_text = ""
     for msg in reversed(messages):
         if msg.get("role") == "assistant" and msg.get("content"):
@@ -179,11 +296,6 @@ def _run_agent_in_thread(
     event_queue.put(None)  # sentinel: 表示 agent 运行结束
 
 
-# ---- 版本标识 ----
-
-VERSION_TAG = "s05 Skills"
-
-
 # ---- FastAPI 应用 ----
 
 app = FastAPI()
@@ -196,9 +308,13 @@ async def index():
     return FileResponse(HTML_PATH)
 
 
-@app.get("/api/version")
-async def version():
-    return {"tag": VERSION_TAG}
+@app.get("/api/stages")
+async def stages_api():
+    """返回可用阶段列表和默认阶段。"""
+    return {
+        "stages": [{"id": k, "tag": v["tag"]} for k, v in STAGES.items()],
+        "default": DEFAULT_STAGE,
+    }
 
 
 @app.websocket("/ws")
@@ -206,12 +322,28 @@ async def ws_endpoint(ws: WebSocket):
     await ws.accept()
 
     messages: list = []
+    current_stage = DEFAULT_STAGE
 
     try:
         while True:
             raw = await ws.receive_text()
             data = json.loads(raw)
 
+            # ---- 切换阶段 ----
+            if data.get("type") == "switch_stage":
+                stage_id = data.get("stage", DEFAULT_STAGE)
+                if stage_id in STAGES:
+                    current_stage = stage_id
+                    messages = []
+                    compact.reset_state()
+                    await ws.send_text(json.dumps({
+                        "type": "stage_switched",
+                        "stage": stage_id,
+                        "tag": STAGES[stage_id]["tag"],
+                    }))
+                continue
+
+            # ---- 用户消息 ----
             if data.get("type") != "user_message":
                 continue
 
@@ -219,29 +351,25 @@ async def ws_endpoint(ws: WebSocket):
             if not user_text:
                 continue
 
+            stage_cfg = STAGES[current_stage]
             messages.append({"role": "user", "content": user_text})
 
-            # 通知前端：开始处理
             await ws.send_text(json.dumps({"type": "processing_start"}))
 
-            # 在子线程运行 agent_loop
             event_queue: Queue = Queue()
             thread = threading.Thread(
                 target=_run_agent_in_thread,
-                args=(messages, event_queue),
+                args=(messages, event_queue, stage_cfg),
                 daemon=True,
             )
             thread.start()
 
-            # 从 queue 读取事件并推送到 WebSocket
             while True:
-                # 用 run_in_executor 避免阻塞事件循环
                 try:
                     event = await asyncio.get_event_loop().run_in_executor(
                         None, lambda: event_queue.get(timeout=0.1)
                     )
                 except Empty:
-                    # 检查线程是否还在运行
                     if not thread.is_alive():
                         break
                     continue

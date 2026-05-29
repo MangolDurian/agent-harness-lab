@@ -23,7 +23,8 @@ agent-harness-lab/
 │   ├── write_file.py
 │   ├── todo.py
 │   ├── subagent.py
-│   └── skill.py
+│   ├── skill.py
+│   └── compact.py
 ├── skills/                     # 技能定义（markdown 文件），s05 新增
 │   ├── git.md
 │   ├── debug.md
@@ -33,19 +34,22 @@ agent-harness-lab/
 │   ├── s02_multi_tool.py
 │   ├── s03_todo.py
 │   ├── s04_subagent.py
-│   └── s05_skills.py
+│   ├── s05_skills.py
+│   └── s06_context_compact.py
 ├── docs/                       # 每课一份学习笔记
 │   ├── s01-notes.md
 │   ├── s02-notes.md
 │   ├── s03-notes.md
 │   ├── s04-notes.md
-│   └── s05-notes.md
+│   ├── s05-notes.md
+│   └── s06-notes.md
 ├── examples/                   # 每课一份阶段成果验证清单
 │   ├── s01_demo_prompts.md
 │   ├── s02_demo_prompts.md
 │   ├── s03_demo_prompts.md
 │   ├── s04_demo_prompts.md
-│   └── s05_demo_prompts.md
+│   ├── s05_demo_prompts.md
+│   └── s06_demo_prompts.md
 ├── run-records/                # 手动实跑记录 + 复盘
 │   └── s04-subagent-run-review.md
 ├── run-outputs/                # 手动实跑产生的文件，避免污染 agents/
@@ -74,7 +78,7 @@ python agents/s01_agent_loop.py
 | s03 | TodoWrite | 没有计划的 agent 走哪算哪 | ✅ |
 | s04 | Subagent | 大任务拆小，每个小任务干净的上下文 | ✅ |
 | s05 | Skills | 用到什么知识，临时加载什么知识 | ✅ |
-| s06 | Context Compact | 上下文总会满，要有办法腾地方 | ⬜ |
+| s06 | Context Compact | 上下文总会满，要有办法腾地方 | ✅ |
 | s07 | Task System | 大目标要拆成小任务，记在磁盘上 | ⬜ |
 | s08 | Background Tasks | 慢操作丢后台，agent 继续想下一步 | ⬜ |
 | s09 | Agent Teams | 任务太大一个人干不完，要能分给队友 | ⬜ |
@@ -180,3 +184,21 @@ python agents/s01_agent_loop.py
 | 技能格式 | JSON/YAML 结构化定义 | 纯 markdown 文件 |
 | 工具设计 | 列出/加载分为两个工具 | 一个 load_skill 处理两种情况 |
 | 技能发现 | 注册表或硬编码列表 | 自动扫描 skills/ 目录 |
+
+---
+
+## s06：Context Compact（已完成）
+
+上下文总会满，要有办法腾地方——通过 on_tool_call 回调 + closure 实现三层压缩，core/loop.py 一行不改。
+
+- 代码：[`agents/s06_context_compact.py`](./agents/s06_context_compact.py) + [`tools/compact.py`](./tools/compact.py)
+- 笔记：[`docs/s06-notes.md`](./docs/s06-notes.md)
+- 验证：[`examples/s06_demo_prompts.md`](./examples/s06_demo_prompts.md)
+
+### 相比原版的三个差异
+
+| 差异 | 原版 | 本项目 |
+|---|---|---|
+| 压缩触发位置 | 修改 agent_loop for 循环头部 | on_tool_call 回调 + closure 访问 messages |
+| compact 工具执行 | 直接在 loop 内检查并调用压缩 | handler 设置 flag + on_tool_call 检查 flag 并执行 |
+| auto_compact 摘要格式 | 单条 system reminder | user+assistant 消息对（兼容 OpenAI 格式交替要求） |

@@ -458,7 +458,7 @@ body {
 
 <!-- Top Bar -->
 <div class="top-bar">
-  <div class="title">Agent Harness Debugger <span id="version-tag" style="opacity:.4;font-weight:400;margin-left:8px"></span></div>
+  <div class="title">Agent Harness Debugger <select id="stage-select" style="opacity:.7;font-weight:400;margin-left:8px;font-family:inherit;font-size:inherit;background:transparent;color:inherit;border:1px solid rgba(var(--paper-rgb),.15);border-radius:4px;padding:2px 6px;cursor:pointer;outline:none"></select></div>
   <div class="stats">
     <span>turns <span class="val" id="stat-turns">0</span></span>
     <span>tools <span class="val" id="stat-tools">0</span></span>
@@ -530,6 +530,7 @@ const statusMsgs = document.getElementById("status-msgs");
 const statusToolCalls = document.getElementById("status-tool-calls");
 const statTurns = document.getElementById("stat-turns");
 const statTools = document.getElementById("stat-tools");
+const stageSelect = document.getElementById("stage-select");
 
 // ---- Tool color mapping ----
 const TOOL_COLORS = {
@@ -539,6 +540,7 @@ const TOOL_COLORS = {
   todo_write: "var(--tool-todo)",
   delegate: "var(--tool-delegate)",
   load_skill: "var(--tool-skill)",
+  compact: "#e67e22",
 };
 
 // ---- WebSocket ----
@@ -632,6 +634,21 @@ function handleEvent(data) {
       scrollToBottom();
       break;
 
+    case "stage_switched":
+      stageSelect.value = data.stage;
+      chatEl.innerHTML = "";
+      toolCallCount = 0;
+      turnCount = 0;
+      msgCount = 0;
+      userScrolled = false;
+      currentDelegateEl = null;
+      selectedCard = null;
+      detailEl.innerHTML = '<div class="detail-empty">click a tool card to inspect</div>';
+      todoListEl.innerHTML = '<div class="todo-empty">no tasks yet</div>';
+      appendSystemMsg("Switched to " + data.tag);
+      updateStatus();
+      break;
+
     case "error":
       isProcessing = false;
       processingBar.classList.remove("active");
@@ -665,6 +682,18 @@ function appendErrorMsg(text) {
   el.style.background = "rgba(231,76,60,.15)";
   el.textContent = "Error: " + text;
   chatEl.appendChild(el);
+}
+
+function appendSystemMsg(text) {
+  const el = document.createElement("div");
+  el.className = "msg msg-user";
+  el.style.background = "rgba(var(--paper-rgb),.06)";
+  el.style.color = "rgba(var(--paper-rgb),.45)";
+  el.style.fontSize = "12px";
+  el.style.fontFamily = "var(--mono)";
+  el.textContent = text;
+  chatEl.appendChild(el);
+  scrollToBottom();
 }
 
 function appendToolCard(data, isSub) {
@@ -720,6 +749,7 @@ function formatArgsPreview(name, args) {
     }
     case "delegate": return truncate(args.task || "", 80);
     case "load_skill": return args.name || "";
+    case "compact": return "compress context";
     default: return JSON.stringify(args).slice(0, 80);
   }
 }
@@ -788,10 +818,22 @@ function truncate(s, n) {
 connect();
 inputEl.focus();
 
-// Fetch version tag
-fetch("/api/version").then(r => r.json()).then(d => {
-  document.getElementById("version-tag").textContent = d.tag || "";
+// Fetch stages and build dropdown
+fetch("/api/stages").then(r => r.json()).then(d => {
+  d.stages.forEach(s => {
+    const opt = document.createElement("option");
+    opt.value = s.id;
+    opt.textContent = s.tag;
+    stageSelect.appendChild(opt);
+  });
+  stageSelect.value = d.default;
 }).catch(() => {});
+
+stageSelect.addEventListener("change", () => {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "switch_stage", stage: stageSelect.value }));
+  }
+});
 </script>
 </body>
 </html>
