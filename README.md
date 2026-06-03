@@ -22,6 +22,7 @@ agent-harness-lab/
 │   ├── read_file.py
 │   ├── write_file.py
 │   ├── todo.py
+│   ├── task.py
 │   ├── subagent.py
 │   ├── skill.py
 │   └── compact.py
@@ -36,13 +37,16 @@ agent-harness-lab/
 │   ├── s04_subagent.py
 │   ├── s05_skills.py
 │   └── s06_context_compact.py
+│   └── s07_task_system.py
 ├── docs/                       # 每课一份学习笔记
 │   ├── s01-notes.md
 │   ├── s02-notes.md
 │   ├── s03-notes.md
 │   ├── s04-notes.md
 │   ├── s05-notes.md
-│   └── s06-notes.md
+│   ├── s06-notes.md
+│   ├── s07-notes.md
+│   └── review/                 # 大白话讲解 + 面试官视角复盘（s01~s07）
 ├── examples/                   # 每课一份阶段成果验证清单
 │   ├── s01_demo_prompts.md
 │   ├── s02_demo_prompts.md
@@ -50,6 +54,7 @@ agent-harness-lab/
 │   ├── s04_demo_prompts.md
 │   ├── s05_demo_prompts.md
 │   └── s06_demo_prompts.md
+│   └── s07_demo_prompts.md
 ├── run-records/                # 手动实跑记录 + 复盘
 │   └── s04-subagent-run-review.md
 ├── run-outputs/                # 手动实跑产生的文件，避免污染 agents/
@@ -79,7 +84,7 @@ python agents/s01_agent_loop.py
 | s04 | Subagent | 大任务拆小，每个小任务干净的上下文 | ✅ |
 | s05 | Skills | 用到什么知识，临时加载什么知识 | ✅ |
 | s06 | Context Compact | 上下文总会满，要有办法腾地方 | ✅ |
-| s07 | Task System | 大目标要拆成小任务，记在磁盘上 | ⬜ |
+| s07 | Task System | 大目标要拆成小任务，记在磁盘上 | ✅ |
 | s08 | Background Tasks | 慢操作丢后台，agent 继续想下一步 | ⬜ |
 | s09 | Agent Teams | 任务太大一个人干不完，要能分给队友 | ⬜ |
 | s10 | Team Protocols | 队友之间要有统一的沟通规矩 | ⬜ |
@@ -202,3 +207,21 @@ python agents/s01_agent_loop.py
 | 压缩触发位置 | 修改 agent_loop for 循环头部 | on_tool_call 回调 + closure 访问 messages |
 | compact 工具执行 | 直接在 loop 内检查并调用压缩 | handler 设置 flag + on_tool_call 检查 flag 并执行 |
 | auto_compact 摘要格式 | 单条 system reminder | user+assistant 消息对（兼容 OpenAI 格式交替要求） |
+
+---
+
+## s07：Task System（已完成）
+
+大目标要拆成小任务，记在磁盘上——用持久化任务系统替代内存 todo，支持增量操作和父子层级。
+
+- 代码：[`agents/s07_task_system.py`](./agents/s07_task_system.py) + [`tools/task.py`](./tools/task.py)
+- 笔记：[`docs/s07-notes.md`](./docs/s07-notes.md)
+- 验证：[`examples/s07_demo_prompts.md`](./examples/s07_demo_prompts.md)
+
+### 相比原版的三个差异
+
+| 差异 | 原版 | 本项目 |
+|---|---|---|
+| 存储方式 | 内存中 TodoManager | JSON 文件持久化 + 原子写入 |
+| 操作模式 | 全量替换（每次传完整列表） | 三个增量工具（create/update/list） |
+| 任务层级 | 扁平列表 | 单层父子（parent_id），树形格式化输出 |

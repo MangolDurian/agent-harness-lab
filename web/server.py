@@ -31,7 +31,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
 from core.loop import agent_loop
-from tools import bash, read_file, write_file, todo, subagent, skill, compact
+from tools import bash, read_file, write_file, todo, task, subagent, skill, compact
 
 # ---- Stage Registry（s01 ~ s06 逐层叠加）----
 
@@ -181,11 +181,48 @@ def _build_stages() -> dict:
         "use_compact": True,
     }
 
+    _task = (
+        "\n\n## 任务追踪（task_create / task_update / task_list）\n"
+        "收到多步骤任务时：\n"
+        "1. 先调用 task_create 制定完整计划（所有项设为 'pending'）。\n"
+        "   - 可以用 parent_id 把大任务拆成子任务（只支持一层）。\n"
+        "2. 开始执行某项前，用 task_update 将其标记为 'in_progress'。\n"
+        "3. 完成后用 task_update 标记为 'completed'。\n"
+        "4. 同一时刻全局只能有一个 'in_progress'。\n"
+        "5. 用 task_list 查看当前任务状态，支持按状态筛选。\n"
+        "任务持久化到磁盘，进程退出后不会丢失。"
+    )
+
+    # s07: + task system (replaces todo with persistent tasks)
+    stages["s07"] = {
+        "tag": "s07 Task System",
+        "system": base + _multi_tool + _task + _delegate + _skill + _compact,
+        "tools": [
+            bash.SCHEMA, read_file.SCHEMA, write_file.SCHEMA,
+            task.SCHEMA_CREATE, task.SCHEMA_UPDATE, task.SCHEMA_LIST,
+            subagent.SCHEMA, skill.SCHEMA, compact.SCHEMA,
+        ],
+        "handlers": {
+            "bash": bash.run,
+            "read_file": read_file.run,
+            "write_file": write_file.run,
+            "task_create": task.create,
+            "task_update": task.update,
+            "task_list": task.list_tasks,
+            "delegate": subagent.run,
+            "load_skill": skill.run,
+            "compact": compact.run,
+        },
+        "use_nag": True,
+        "use_subagent": True,
+        "use_compact": True,
+    }
+
     return stages
 
 
 STAGES = _build_stages()
-DEFAULT_STAGE = "s06"
+DEFAULT_STAGE = "s07"
 
 
 # ---- Nag Wrapper（支持 stage 差异化）----
@@ -198,6 +235,8 @@ def _make_nagging_handlers(base_handlers: dict, use_compact: bool = False) -> di
     """
     tool_calls_since_todo = [0]
     _NAG_THRESHOLD = 3
+    # s07 起任务工具换成 task_*，提醒文案与数据源也要随之切换
+    uses_task = "task_create" in base_handlers
 
     def _wrap(fn):
         @functools.wraps(fn)
@@ -205,12 +244,19 @@ def _make_nagging_handlers(base_handlers: dict, use_compact: bool = False) -> di
             result = fn(**kwargs)
             tool_calls_since_todo[0] += 1
             if tool_calls_since_todo[0] >= _NAG_THRESHOLD:
-                reminder = (
-                    f"\n\n[提醒] 你已经连续 {tool_calls_since_todo[0]} 次工具调用"
-                    "没有更新待办列表了。考虑调用 todo_write 来追踪你的进度。"
-                )
-                if todo.has_items():
-                    reminder += "\n当前待办：\n" + todo.current()
+                if uses_task:
+                    reminder = (
+                        f"\n\n[提醒] 你已经连续 {tool_calls_since_todo[0]} 次工具调用"
+                        "没有更新任务列表了。考虑调用 task_create 或 task_update 来追踪你的进度。"
+                    )
+                    reminder += "\n当前任务：\n" + task.current()
+                else:
+                    reminder = (
+                        f"\n\n[提醒] 你已经连续 {tool_calls_since_todo[0]} 次工具调用"
+                        "没有更新待办列表了。考虑调用 todo_write 来追踪你的进度。"
+                    )
+                    if todo.has_items():
+                        reminder += "\n当前待办：\n" + todo.current()
                 return result + reminder
             return result
 
@@ -227,7 +273,7 @@ def _make_nagging_handlers(base_handlers: dict, use_compact: bool = False) -> di
 
     wrapped = {}
     for name, handler in base_handlers.items():
-        if name == "todo_write":
+        if name in ("todo_write", "task_create", "task_update", "task_list"):
             wrapped[name] = _todo_wrap(handler)
         elif name == "compact":
             wrapped[name] = handler  # compact 不计入 nag 计数
@@ -251,6 +297,8 @@ def _run_agent_in_thread(
 
         if name == "todo_write":
             event["todo_state"] = args.get("items", [])
+        elif name in ("task_create", "task_update", "task_list"):
+            event["task_state"] = task.current()
 
         event_queue.put(event)
 
@@ -336,11 +384,15 @@ async def ws_endpoint(ws: WebSocket):
                     current_stage = stage_id
                     messages = []
                     compact.reset_state()
-                    await ws.send_text(json.dumps({
+                    event = {
                         "type": "stage_switched",
                         "stage": stage_id,
                         "tag": STAGES[stage_id]["tag"],
-                    }))
+                    }
+                    # s07: 加载已有任务状态
+                    if stage_id == "s07":
+                        event["task_state"] = task.current()
+                    await ws.send_text(json.dumps(event, ensure_ascii=False))
                 continue
 
             # ---- 用户消息 ----

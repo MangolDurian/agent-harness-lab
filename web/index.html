@@ -469,7 +469,7 @@ body {
 <div class="main-area">
   <!-- Todo Sidebar -->
   <div class="todo-panel">
-    <div class="todo-header">TODO</div>
+    <div class="todo-header" id="sidebar-header">TODO</div>
     <div class="todo-list" id="todo-list">
       <div class="todo-empty" id="todo-empty">no tasks yet</div>
     </div>
@@ -531,6 +531,7 @@ const statusToolCalls = document.getElementById("status-tool-calls");
 const statTurns = document.getElementById("stat-turns");
 const statTools = document.getElementById("stat-tools");
 const stageSelect = document.getElementById("stage-select");
+const sidebarHeader = document.getElementById("sidebar-header");
 
 // ---- Tool color mapping ----
 const TOOL_COLORS = {
@@ -538,6 +539,9 @@ const TOOL_COLORS = {
   read_file: "var(--tool-read)",
   write_file: "var(--tool-write)",
   todo_write: "var(--tool-todo)",
+  task_create: "#9b59b6",
+  task_update: "#8e44ad",
+  task_list: "#7d3c98",
   delegate: "var(--tool-delegate)",
   load_skill: "var(--tool-skill)",
   compact: "#e67e22",
@@ -612,6 +616,7 @@ function handleEvent(data) {
       toolCallCount++;
       appendToolCard(data, false);
       if (data.todo_state) updateTodo(data.todo_state);
+      if (data.task_state) updateTodoText(data.task_state);
       scrollToBottom();
       break;
 
@@ -644,7 +649,13 @@ function handleEvent(data) {
       currentDelegateEl = null;
       selectedCard = null;
       detailEl.innerHTML = '<div class="detail-empty">click a tool card to inspect</div>';
-      todoListEl.innerHTML = '<div class="todo-empty">no tasks yet</div>';
+      // s07: header 显示 TASKS，其他显示 TODO
+      sidebarHeader.textContent = data.stage === "s07" ? "TASKS" : "TODO";
+      if (data.task_state) {
+        updateTodoText(data.task_state);
+      } else {
+        todoListEl.innerHTML = '<div class="todo-empty">no tasks yet</div>';
+      }
       appendSystemMsg("Switched to " + data.tag);
       updateStatus();
       break;
@@ -747,6 +758,17 @@ function formatArgsPreview(name, args) {
       const items = args.items || [];
       return items.length + " items";
     }
+    case "task_create": {
+      const tasks = args.tasks || [];
+      return tasks.length + " tasks created";
+    }
+    case "task_update": {
+      const updates = args.updates || [];
+      return updates.map(u => "#" + (u.id || "?") + (u.status ? "→" + u.status : "")).join(", ");
+    }
+    case "task_list": {
+      return args.status ? "filter: " + args.status : "all tasks";
+    }
     case "delegate": return truncate(args.task || "", 80);
     case "load_skill": return args.name || "";
     case "compact": return "compress context";
@@ -792,6 +814,57 @@ function updateTodo(items) {
       `<span class="text">${escapeHtml(item.text)}</span>` +
     '</div>';
   }).join("");
+}
+
+// ---- Task (s07+) ----
+function updateTodoText(text) {
+  if (!text || text === "（无任务）") {
+    todoListEl.innerHTML = '<div class="todo-empty">no tasks yet</div>';
+    return;
+  }
+
+  const iconColors = {
+    "[ ]": "todo-item pending",
+    "[~]": "todo-item in_progress",
+    "[x]": "todo-item completed",
+  };
+
+  const lines = text.split("\n");
+  let html = "";
+
+  for (const line of lines) {
+    // Match task line: optional indent + number + icon + text
+    // e.g. "1. [ ] Root" or "  1.1. [~] Child"
+    const taskMatch = line.match(/^(\s*)(\d+(?:\.\d+)*)\.\s+(\[[ x~]\])\s+(.+)$/);
+    if (taskMatch) {
+      const indent = taskMatch[1].length;
+      const num = taskMatch[2];
+      const icon = taskMatch[3];
+      const taskText = taskMatch[4];
+      const cls = iconColors[icon] || "todo-item pending";
+      const isChild = indent > 0;
+      const childStyle = isChild ? 'padding-left:32px;font-size:12px;' : '';
+      html += '<div class="' + cls + '" style="' + childStyle + '">' +
+        '<span class="icon">' + escapeHtml(icon) + '</span>' +
+        '<span class="text">' + escapeHtml(taskText) + '</span>' +
+      '</div>';
+      continue;
+    }
+
+    // Summary line: (X 待办, Y 进行中, ...)
+    const summaryMatch = line.match(/^\(/);
+    if (summaryMatch) {
+      html += '<div style="padding:8px 16px 4px;font-family:var(--mono);font-size:11px;color:rgba(var(--paper-rgb),.35)">' + escapeHtml(line) + '</div>';
+      continue;
+    }
+
+    // Fallback: plain text line
+    if (line.trim()) {
+      html += '<div style="padding:4px 16px;font-size:12px;color:rgba(var(--paper-rgb),.5)">' + escapeHtml(line) + '</div>';
+    }
+  }
+
+  todoListEl.innerHTML = html || '<div class="todo-empty">no tasks yet</div>';
 }
 
 // ---- Status ----
