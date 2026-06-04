@@ -37,8 +37,8 @@ agent-harness-lab/
 │   ├── s03_todo.py
 │   ├── s04_subagent.py
 │   ├── s05_skills.py
-│   └── s06_context_compact.py
-│   └── s07_task_system.py
+│   ├── s06_context_compact.py
+│   ├── s07_task_system.py
 │   └── s08_background.py
 ├── docs/                       # 每课一份学习笔记
 │   ├── s01-notes.md
@@ -49,15 +49,15 @@ agent-harness-lab/
 │   ├── s06-notes.md
 │   ├── s07-notes.md
 │   ├── s08-notes.md
-│   └── review/                 # 大白话讲解 + 面试官视角复盘（s01~s07）
+│   └── review/                 # 大白话讲解 + 面试官视角复盘（s01~s08）
 ├── examples/                   # 每课一份阶段成果验证清单
 │   ├── s01_demo_prompts.md
 │   ├── s02_demo_prompts.md
 │   ├── s03_demo_prompts.md
 │   ├── s04_demo_prompts.md
 │   ├── s05_demo_prompts.md
-│   └── s06_demo_prompts.md
-│   └── s07_demo_prompts.md
+│   ├── s06_demo_prompts.md
+│   ├── s07_demo_prompts.md
 │   └── s08_demo_prompts.md
 ├── run-records/                # 手动实跑记录 + 复盘
 │   └── s04-subagent-run-review.md
