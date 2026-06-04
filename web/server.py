@@ -18,6 +18,7 @@ import functools
 import json
 import sys
 import threading
+import time
 from pathlib import Path
 from queue import Queue, Empty
 
@@ -31,7 +32,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
 from core.loop import agent_loop
-from tools import bash, read_file, write_file, todo, task, subagent, skill, compact
+from tools import bash, read_file, write_file, todo, task, subagent, skill, compact, background
 
 # ---- Stage Registry（s01 ~ s06 逐层叠加）----
 
@@ -218,11 +219,88 @@ def _build_stages() -> dict:
         "use_compact": True,
     }
 
+    _background = (
+        "\n\n## 后台任务（bash run_in_background + background_status）\n"
+        "长时间运行的命令（pip install、docker build、npm install 等），"
+        "在 bash 调用时设 run_in_background=true，命令会在后台执行。\n"
+        "设为 true 后你会立刻收到「后台任务已启动」的回复，可以继续做其他事。\n"
+        "后台任务完成后，结果会出现在下一次工具调用的输出中。\n"
+        "如果你想主动检查后台任务状态，调用 background_status 即可。\n"
+        "用户问你「装好了吗」时，用 background_status 确认而不是凭记忆回答。"
+    )
+
+    import copy as _copy
+    _SCHEMA_BASH_BG = _copy.deepcopy(bash.SCHEMA)
+    _SCHEMA_BASH_BG["function"]["parameters"]["properties"]["run_in_background"] = {
+        "type": "boolean",
+        "description": "是否在后台运行（慢命令如 pip install、npm install、docker build 推荐设为 true）",
+    }
+
+    # s08: + background tasks
+    stages["s08"] = {
+        "tag": "s08 Background Tasks",
+        "system": base + _multi_tool + _background + _task + _delegate + _skill + _compact,
+        "tools": [
+            _SCHEMA_BASH_BG, read_file.SCHEMA, write_file.SCHEMA,
+            task.SCHEMA_CREATE, task.SCHEMA_UPDATE, task.SCHEMA_LIST,
+            subagent.SCHEMA, skill.SCHEMA, compact.SCHEMA,
+            background.SCHEMA_STATUS,
+        ],
+        "handlers": {
+            "bash": bash.run,
+            "read_file": read_file.run,
+            "write_file": write_file.run,
+            "task_create": task.create,
+            "task_update": task.update,
+            "task_list": task.list_tasks,
+            "delegate": subagent.run,
+            "load_skill": skill.run,
+            "compact": compact.run,
+            "background_status": background.status,
+        },
+        "use_nag": True,
+        "use_subagent": True,
+        "use_compact": True,
+        "use_background": True,
+    }
+
     return stages
 
 
 STAGES = _build_stages()
-DEFAULT_STAGE = "s07"
+DEFAULT_STAGE = "s08"
+
+
+# ---- Background Wrapper（s08+）----
+
+
+def _make_background_handlers(base_handlers: dict, bg_manager) -> dict:
+    """包装所有 handler：bash+run_in_background 走后台线程，所有 handler 前缀后台通知。"""
+    import functools as _ft
+
+    def wrap(name, handler):
+        @_ft.wraps(handler)
+        def wrapper(**kwargs):
+            notifications = ""
+            completed = bg_manager.collect()
+            if completed:
+                notifications = bg_manager.format_results(completed) + "\n\n"
+
+            if name == "bash" and kwargs.get("run_in_background"):
+                kwargs.pop("run_in_background", None)
+                command = kwargs.get("command", "")
+                bg_id = bg_manager.start(lambda: handler(**kwargs), command)
+                return (
+                    notifications
+                    + f"后台任务 bg_{bg_id} 已启动，命令：{command}\n"
+                    "完成时会通知你。你可以继续做其他事。"
+                )
+
+            kwargs.pop("run_in_background", None)
+            return notifications + handler(**kwargs)
+        return wrapper
+
+    return {name: wrap(name, h) for name, h in base_handlers.items()}
 
 
 # ---- Nag Wrapper（支持 stage 差异化）----
@@ -300,6 +378,12 @@ def _run_agent_in_thread(
         elif name in ("task_create", "task_update", "task_list"):
             event["task_state"] = task.current()
 
+        # s08: 检测后台任务启动和完成
+        if args.get("run_in_background"):
+            event["background_start"] = True
+        if output and "[后台任务 bg_" in output:
+            event["background_complete"] = True
+
         event_queue.put(event)
 
         if stage_cfg["use_compact"]:
@@ -312,18 +396,60 @@ def _run_agent_in_thread(
     if stage_cfg["use_subagent"]:
         subagent.set_subagent_callback(on_sub_tool_call)
 
-    if stage_cfg["use_nag"]:
-        handlers = _make_nagging_handlers(stage_cfg["handlers"], stage_cfg["use_compact"])
-    else:
-        handlers = dict(stage_cfg["handlers"])
+    handlers = dict(stage_cfg["handlers"])
 
-    stop_reason = agent_loop(
-        messages,
-        system=stage_cfg["system"],
-        tools=stage_cfg["tools"],
-        handlers=handlers,
-        on_tool_call=on_tool_call,
-    )
+    # s08+: background wrapper 先于 nag
+    if stage_cfg.get("use_background"):
+        handlers = _make_background_handlers(handlers, background)
+
+    if stage_cfg["use_nag"]:
+        handlers = _make_nagging_handlers(handlers, stage_cfg["use_compact"])
+
+    # Post-loop flush：模型不再调工具后，检查是否有后台任务完成通知
+    while True:
+        stop_reason = agent_loop(
+            messages,
+            system=stage_cfg["system"],
+            tools=stage_cfg["tools"],
+            handlers=handlers,
+            on_tool_call=on_tool_call,
+        )
+
+        if not stage_cfg.get("use_background"):
+            break
+
+        completed = background.collect()
+        if completed:
+            notification = background.format_results(completed)
+            messages.append({
+                "role": "user",
+                "content": f"[系统] 后台任务完成通知：\n{notification}",
+            })
+            event_queue.put({
+                "type": "system_message",
+                "text": "后台任务完成，通知模型处理",
+            })
+            continue
+
+        # 还有在跑的任务？短超时轮询等收尾
+        if background.has_running():
+            deadline = time.time() + 10
+            while background.has_running() and time.time() < deadline:
+                time.sleep(0.2)
+            completed = background.collect()
+            if completed:
+                notification = background.format_results(completed)
+                messages.append({
+                    "role": "user",
+                    "content": f"[系统] 后台任务完成通知：\n{notification}",
+                })
+                event_queue.put({
+                    "type": "system_message",
+                    "text": "后台任务完成，通知模型处理",
+                })
+                continue
+
+        break
 
     assistant_text = ""
     for msg in reversed(messages):
@@ -392,6 +518,9 @@ async def ws_endpoint(ws: WebSocket):
                     # s07: 加载已有任务状态
                     if stage_id == "s07":
                         event["task_state"] = task.current()
+                    elif stage_id == "s08":
+                        event["task_state"] = task.current()
+                        background.reset()
                     await ws.send_text(json.dumps(event, ensure_ascii=False))
                 continue
 

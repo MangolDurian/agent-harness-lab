@@ -18,3 +18,4 @@
 | s05 | Skills | 延迟加载的 system prompt 片段 | [s05-review.md](./s05-review.md) |
 | s06 | Context Compact | 不改循环，靠回调腾上下文 | [s06-review.md](./s06-review.md) |
 | s07 | Task System | 任务从内存便利贴变成硬盘白板 | [s07-review.md](./s07-review.md) |
+| s08 | Background Tasks | 慢活丢后台，结果搭便车回上下文 | [s08-review.md](./s08-review.md) |

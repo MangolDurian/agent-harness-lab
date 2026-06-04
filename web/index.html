@@ -20,6 +20,7 @@
   --tool-todo: #9b59b6;
   --tool-delegate: #e07ba8;
   --tool-skill: #2db5b5;
+  --tool-background: #e67e22;
   --tool-default: #8899aa;
 }
 
@@ -266,6 +267,35 @@ body {
   opacity: .5;
 }
 
+/* Background badge */
+.tool-card .bg-badge {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--tool-background);
+  background: rgba(230, 126, 34, .12);
+  border-radius: 3px;
+  padding: 1px 5px;
+  margin-left: 6px;
+  letter-spacing: .03em;
+  vertical-align: middle;
+}
+
+/* Background completion notification in output */
+.tool-card .bg-notification {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--tool-background);
+  background: rgba(230, 126, 34, .08);
+  border-left: 2px solid var(--tool-background);
+  border-radius: 3px;
+  padding: 6px 10px;
+  margin-bottom: 6px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
 /* ---- Detail Panel ---- */
 .detail-panel {
   width: 360px;
@@ -430,6 +460,40 @@ body {
   animation: processingSlide 1.2s ease-in-out infinite;
 }
 
+/* ---- Queued messages (输入排队) ---- */
+.queued-row {
+  display: none;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.queued-row.active { display: flex; }
+.queued-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(var(--paper-rgb), .06);
+  border: 1px solid rgba(var(--paper-rgb), .12);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: rgba(var(--paper-rgb), .65);
+}
+.queued-pill .queued-tag { color: #e67e22; flex-shrink: 0; }
+.queued-pill .queued-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.queued-pill .queued-cancel {
+  cursor: pointer;
+  color: rgba(var(--paper-rgb), .4);
+  flex-shrink: 0;
+}
+.queued-pill .queued-cancel:hover { color: rgba(var(--paper-rgb), .8); }
+
 /* ---- Scrollbar ---- */
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -498,6 +562,7 @@ body {
     <span id="status-msgs">0 msgs</span>
     <span id="status-tool-calls">0 tool calls</span>
   </div>
+  <div class="queued-row" id="queued-row"></div>
   <div class="input-row">
     <input type="text" id="input" placeholder="type a message..." autocomplete="off">
     <button id="send-btn">Send</button>
@@ -513,6 +578,8 @@ let msgCount = 0;
 let isProcessing = false;
 let selectedCard = null;
 let userScrolled = false;
+// 处理中输入的消息排队，本轮结束后按顺序自动发出
+let pendingQueue = [];
 // Track delegate nesting: when a delegate tool_call comes, subsequent sub_tool_calls
 // belong to it until the next non-sub event or processing_end
 let currentDelegateEl = null;
@@ -532,6 +599,7 @@ const statTurns = document.getElementById("stat-turns");
 const statTools = document.getElementById("stat-tools");
 const stageSelect = document.getElementById("stage-select");
 const sidebarHeader = document.getElementById("sidebar-header");
+const queuedRow = document.getElementById("queued-row");
 
 // ---- Tool color mapping ----
 const TOOL_COLORS = {
@@ -545,6 +613,7 @@ const TOOL_COLORS = {
   delegate: "var(--tool-delegate)",
   load_skill: "var(--tool-skill)",
   compact: "#e67e22",
+  background_status: "var(--tool-background)",
 };
 
 // ---- WebSocket ----
@@ -560,6 +629,14 @@ function connect() {
   ws.onclose = () => {
     statusDot.classList.remove("connected");
     statusText.textContent = "disconnected";
+    // 断连后后端会以全新的空 messages 重连，清掉处理态和排队，避免把跟进消息发进新上下文
+    isProcessing = false;
+    processingBar.classList.remove("active");
+    sendBtn.disabled = false;
+    sendBtn.textContent = "Send";
+    inputEl.placeholder = "type a message...";
+    pendingQueue = [];
+    renderQueue();
     setTimeout(connect, 2000);
   };
 
@@ -574,9 +651,52 @@ function connect() {
 // ---- Send ----
 function sendMessage() {
   const text = inputEl.value.trim();
-  if (!text || !ws || ws.readyState !== WebSocket.OPEN || isProcessing) return;
+  if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+  // 处理中：不丢弃也不阻塞，先排队，本轮结束自动发出
+  if (isProcessing) {
+    pendingQueue.push(text);
+    inputEl.value = "";
+    renderQueue();
+    return;
+  }
   ws.send(JSON.stringify({ type: "user_message", content: text }));
   inputEl.value = "";
+  appendUserMsg(text);
+  msgCount++;
+  updateStatus();
+}
+
+// 渲染排队中的消息提示条
+function renderQueue() {
+  queuedRow.innerHTML = "";
+  if (pendingQueue.length === 0) {
+    queuedRow.classList.remove("active");
+    return;
+  }
+  queuedRow.classList.add("active");
+  pendingQueue.forEach((text, i) => {
+    const pill = document.createElement("div");
+    pill.className = "queued-pill";
+    pill.innerHTML =
+      '<span class="queued-tag">QUEUED</span>' +
+      '<span class="queued-text"></span>' +
+      '<span class="queued-cancel" title="cancel">x</span>';
+    pill.querySelector(".queued-text").textContent = text;
+    pill.querySelector(".queued-cancel").addEventListener("click", () => {
+      pendingQueue.splice(i, 1);
+      renderQueue();
+    });
+    queuedRow.appendChild(pill);
+  });
+}
+
+// 本轮处理结束后，按 FIFO 发出一条排队消息（发出后会再触发 processing_start）
+function flushQueue() {
+  if (isProcessing || pendingQueue.length === 0) return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const text = pendingQueue.shift();
+  renderQueue();
+  ws.send(JSON.stringify({ type: "user_message", content: text }));
   appendUserMsg(text);
   msgCount++;
   updateStatus();
@@ -608,7 +728,9 @@ function handleEvent(data) {
     case "processing_start":
       isProcessing = true;
       processingBar.classList.add("active");
-      sendBtn.disabled = true;
+      // 不再禁用输入：处理中允许继续输入，消息会排队
+      sendBtn.textContent = "Queue";
+      inputEl.placeholder = "processing… type to queue a follow-up";
       currentDelegateEl = null;
       break;
 
@@ -629,6 +751,8 @@ function handleEvent(data) {
       isProcessing = false;
       processingBar.classList.remove("active");
       sendBtn.disabled = false;
+      sendBtn.textContent = "Send";
+      inputEl.placeholder = "type a message...";
       turnCount = data.turn_count || turnCount;
       if (data.assistant_text) {
         appendAssistantMsg(data.assistant_text);
@@ -637,6 +761,8 @@ function handleEvent(data) {
       currentDelegateEl = null;
       updateStatus();
       scrollToBottom();
+      // 本轮结束，自动发出一条排队消息（会再触发 processing_start）
+      flushQueue();
       break;
 
     case "stage_switched":
@@ -648,9 +774,11 @@ function handleEvent(data) {
       userScrolled = false;
       currentDelegateEl = null;
       selectedCard = null;
+      pendingQueue = [];
+      renderQueue();
       detailEl.innerHTML = '<div class="detail-empty">click a tool card to inspect</div>';
-      // s07: header 显示 TASKS，其他显示 TODO
-      sidebarHeader.textContent = data.stage === "s07" ? "TASKS" : "TODO";
+      // s07+: header 显示 TASKS，其他显示 TODO
+      sidebarHeader.textContent = (data.stage === "s07" || data.stage === "s08") ? "TASKS" : "TODO";
       if (data.task_state) {
         updateTodoText(data.task_state);
       } else {
@@ -664,7 +792,15 @@ function handleEvent(data) {
       isProcessing = false;
       processingBar.classList.remove("active");
       sendBtn.disabled = false;
+      sendBtn.textContent = "Send";
+      inputEl.placeholder = "type a message...";
       appendErrorMsg(data.message || "unknown error");
+      scrollToBottom();
+      flushQueue();
+      break;
+
+    case "system_message":
+      appendSystemMsg(data.text || "");
       scrollToBottom();
       break;
   }
@@ -714,13 +850,27 @@ function appendToolCard(data, isSub) {
   el.style.setProperty("--tool-color", color);
 
   const argsPreview = formatArgsPreview(data.name, data.args);
-  const outputPreview = truncate(data.output || "", 80);
+  const outputRaw = data.output || "";
+
+  // Detect background notification in output: "[后台任务 bg_N ...]"
+  const bgMatch = outputRaw.match(/^\[后台任务 bg_(\d+) (完成|失败)\]([^\n]*)\n([\s\S]*)/);
+  let bgNotifHtml = "";
+  let remainingOutput = outputRaw;
+  if (bgMatch) {
+    const notifText = bgMatch[0].split("\n\n")[0]; // notification block only
+    remainingOutput = outputRaw.slice(notifText.length).replace(/^\n+/, "");
+    bgNotifHtml = '<div class="bg-notification">' + escapeHtml(notifText) + '</div>';
+  }
+
+  const outputPreview = truncate(remainingOutput, 80);
 
   el.innerHTML =
     '<div class="tool-header">' +
       '<span class="tool-name">' + escapeHtml(data.name) + '</span>' +
+      (data.background_start ? '<span class="bg-badge">BG</span>' : '') +
     '</div>' +
     (argsPreview ? '<div class="tool-args">' + escapeHtml(argsPreview) + '</div>' : '') +
+    bgNotifHtml +
     (outputPreview ? '<div class="tool-output-preview">' + escapeHtml(outputPreview) + '</div>' : '');
 
   el.dataset.toolData = JSON.stringify(data);
@@ -751,7 +901,7 @@ function appendToolCard(data, isSub) {
 function formatArgsPreview(name, args) {
   if (!args) return "";
   switch (name) {
-    case "bash": return "$ " + (args.command || "");
+    case "bash": return "$ " + (args.command || "") + (args.run_in_background ? " [bg]" : "");
     case "read_file": return args.file_path || "";
     case "write_file": return (args.file_path || "") + " (" + ((args.content || "").split("\n").length) + " lines)";
     case "todo_write": {
@@ -772,6 +922,7 @@ function formatArgsPreview(name, args) {
     case "delegate": return truncate(args.task || "", 80);
     case "load_skill": return args.name || "";
     case "compact": return "compress context";
+    case "background_status": return "check background tasks";
     default: return JSON.stringify(args).slice(0, 80);
   }
 }
@@ -785,6 +936,13 @@ function showDetail(data) {
   html += '<div class="detail-value" style="color:' + color + ';font-weight:500">' + escapeHtml(data.name) + '</div>';
   html += '</div>';
 
+  if (data.background_start) {
+    html += '<div class="detail-section">';
+    html += '<div class="detail-label">Mode</div>';
+    html += '<div class="detail-value" style="color:var(--tool-background);font-weight:500">background</div>';
+    html += '</div>';
+  }
+
   html += '<div class="detail-section">';
   html += '<div class="detail-label">Arguments</div>';
   html += '<div class="detail-value args-view">' + escapeHtml(JSON.stringify(data.args, null, 2)) + '</div>';
@@ -792,7 +950,13 @@ function showDetail(data) {
 
   html += '<div class="detail-section">';
   html += '<div class="detail-label">Output</div>';
-  html += '<div class="detail-value">' + escapeHtml(data.output || "(empty)") + '</div>';
+  // Highlight background notifications in detail output
+  let outputHtml = escapeHtml(data.output || "(empty)");
+  outputHtml = outputHtml.replace(
+    /\[后台任务 bg_(\d+) (完成|失败)\]/g,
+    '<span style="color:var(--tool-background);font-weight:600">[后台任务 bg_$1 $2]</span>'
+  );
+  html += '<div class="detail-value">' + outputHtml + '</div>';
   html += '</div>';
 
   detailEl.innerHTML = html;
@@ -833,9 +997,9 @@ function updateTodoText(text) {
   let html = "";
 
   for (const line of lines) {
-    // Match task line: optional indent + number + icon + text
-    // e.g. "1. [ ] Root" or "  1.1. [~] Child"
-    const taskMatch = line.match(/^(\s*)(\d+(?:\.\d+)*)\.\s+(\[[ x~]\])\s+(.+)$/);
+    // Match task.py format: optional indent + #id + icon + text
+    // e.g. "#1 [ ] 搭建 Web API" or "  #6 [~] 设计数据库 schema"
+    const taskMatch = line.match(/^(\s*)#(\d+)\s+(\[[ x~?]\])\s+(.+)$/);
     if (taskMatch) {
       const indent = taskMatch[1].length;
       const num = taskMatch[2];

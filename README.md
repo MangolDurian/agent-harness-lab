@@ -25,7 +25,8 @@ agent-harness-lab/
 │   ├── task.py
 │   ├── subagent.py
 │   ├── skill.py
-│   └── compact.py
+│   ├── compact.py
+│   └── background.py
 ├── skills/                     # 技能定义（markdown 文件），s05 新增
 │   ├── git.md
 │   ├── debug.md
@@ -38,6 +39,7 @@ agent-harness-lab/
 │   ├── s05_skills.py
 │   └── s06_context_compact.py
 │   └── s07_task_system.py
+│   └── s08_background.py
 ├── docs/                       # 每课一份学习笔记
 │   ├── s01-notes.md
 │   ├── s02-notes.md
@@ -46,6 +48,7 @@ agent-harness-lab/
 │   ├── s05-notes.md
 │   ├── s06-notes.md
 │   ├── s07-notes.md
+│   ├── s08-notes.md
 │   └── review/                 # 大白话讲解 + 面试官视角复盘（s01~s07）
 ├── examples/                   # 每课一份阶段成果验证清单
 │   ├── s01_demo_prompts.md
@@ -55,6 +58,7 @@ agent-harness-lab/
 │   ├── s05_demo_prompts.md
 │   └── s06_demo_prompts.md
 │   └── s07_demo_prompts.md
+│   └── s08_demo_prompts.md
 ├── run-records/                # 手动实跑记录 + 复盘
 │   └── s04-subagent-run-review.md
 ├── run-outputs/                # 手动实跑产生的文件，避免污染 agents/
@@ -85,7 +89,7 @@ python agents/s01_agent_loop.py
 | s05 | Skills | 用到什么知识，临时加载什么知识 | ✅ |
 | s06 | Context Compact | 上下文总会满，要有办法腾地方 | ✅ |
 | s07 | Task System | 大目标要拆成小任务，记在磁盘上 | ✅ |
-| s08 | Background Tasks | 慢操作丢后台，agent 继续想下一步 | ⬜ |
+| s08 | Background Tasks | 慢操作丢后台，agent 继续想下一步 | ✅ |
 | s09 | Agent Teams | 任务太大一个人干不完，要能分给队友 | ⬜ |
 | s10 | Team Protocols | 队友之间要有统一的沟通规矩 | ⬜ |
 | s11 | Autonomous Agents | 队友自己看看板，有活就认领 | ⬜ |
@@ -225,3 +229,21 @@ python agents/s01_agent_loop.py
 | 存储方式 | 内存中 TodoManager | JSON 文件持久化 + 原子写入 |
 | 操作模式 | 全量替换（每次传完整列表） | 三个增量工具（create/update/list） |
 | 任务层级 | 扁平列表 | 单层父子（parent_id），树形格式化输出 |
+
+---
+
+## s08：Background Tasks（已完成）
+
+慢操作丢后台，agent 继续想下一步——bash 工具新增 `run_in_background` 参数，handler wrapper 注入后台完成通知。
+
+- 代码：[`agents/s08_background.py`](./agents/s08_background.py) + [`tools/background.py`](./tools/background.py)
+- 笔记：[`docs/s08-notes.md`](./docs/s08-notes.md)
+- 验证：[`examples/s08_demo_prompts.md`](./examples/s08_demo_prompts.md)
+
+### 相比原版的三个差异
+
+| 差异 | 原版 | 本项目 |
+|---|---|---|
+| 后台通知注入 | 直接插入 assistant 消息 | handler wrapper 输出前缀（不改 loop） |
+| 后台任务管理 | 内建调度系统 | 简单的 threading + dict（daemon 线程） |
+| 扩展 bash 参数 | 修改 bash 工具定义 | deepcopy SCHEMA + agent 层扩展 |
