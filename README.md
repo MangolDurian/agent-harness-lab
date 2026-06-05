@@ -26,7 +26,8 @@ agent-harness-lab/
 │   ├── subagent.py
 │   ├── skill.py
 │   ├── compact.py
-│   └── background.py
+│   ├── background.py
+│   └── team.py
 ├── skills/                     # 技能定义（markdown 文件），s05 新增
 │   ├── git.md
 │   ├── debug.md
@@ -40,6 +41,7 @@ agent-harness-lab/
 │   ├── s06_context_compact.py
 │   ├── s07_task_system.py
 │   └── s08_background.py
+│   └── s09_agent_teams.py
 ├── docs/                       # 每课一份学习笔记
 │   ├── s01-notes.md
 │   ├── s02-notes.md
@@ -49,7 +51,8 @@ agent-harness-lab/
 │   ├── s06-notes.md
 │   ├── s07-notes.md
 │   ├── s08-notes.md
-│   └── review/                 # 大白话讲解 + 面试官视角复盘（s01~s08）
+│   ├── s09-notes.md
+│   └── review/                 # 大白话讲解 + 面试官视角复盘（s01~s09）
 ├── examples/                   # 每课一份阶段成果验证清单
 │   ├── s01_demo_prompts.md
 │   ├── s02_demo_prompts.md
@@ -59,6 +62,7 @@ agent-harness-lab/
 │   ├── s06_demo_prompts.md
 │   ├── s07_demo_prompts.md
 │   └── s08_demo_prompts.md
+│   └── s09_demo_prompts.md
 ├── run-records/                # 手动实跑记录 + 复盘
 │   └── s04-subagent-run-review.md
 ├── run-outputs/                # 手动实跑产生的文件，避免污染 agents/
@@ -90,7 +94,7 @@ python agents/s01_agent_loop.py
 | s06 | Context Compact | 上下文总会满，要有办法腾地方 | ✅ |
 | s07 | Task System | 大目标要拆成小任务，记在磁盘上 | ✅ |
 | s08 | Background Tasks | 慢操作丢后台，agent 继续想下一步 | ✅ |
-| s09 | Agent Teams | 任务太大一个人干不完，要能分给队友 | ⬜ |
+| s09 | Agent Teams | 任务太大一个人干不完，要能分给队友 | ✅ |
 | s10 | Team Protocols | 队友之间要有统一的沟通规矩 | ⬜ |
 | s11 | Autonomous Agents | 队友自己看看板，有活就认领 | ⬜ |
 | s12 | Worktree Isolation | 各干各的目录，互不干扰 | ⬜ |
@@ -247,3 +251,22 @@ python agents/s01_agent_loop.py
 | 后台通知注入 | 直接插入 assistant 消息 | handler wrapper 输出前缀（不改 loop） |
 | 后台任务管理 | 内建调度系统 | 简单的 threading + dict（daemon 线程） |
 | 扩展 bash 参数 | 修改 bash 工具定义 | deepcopy SCHEMA + agent 层扩展 |
+
+---
+
+## s09：Agent Teams（已完成）
+
+任务太大一个人干不完，要能分给队友——spawn 创建持久化队友（独立线程），通过 JSONL inbox 消息总线互相通信。
+
+- 代码：[`agents/s09_agent_teams.py`](./agents/s09_agent_teams.py) + [`tools/team.py`](./tools/team.py)
+- 笔记：[`docs/s09-notes.md`](./docs/s09-notes.md)
+- 验证：[`examples/s09_demo_prompts.md`](./examples/s09_demo_prompts.md)
+- 实跑复盘：[`run-records/s09-agent-teams-run-review.md`](./run-records/s09-agent-teams-run-review.md)
+
+### 相比原版的三个差异
+
+| 差异 | 原版（s04 delegate） | 本项目（s09 队友） |
+|---|---|---|
+| 并发模型 | 阻塞主 agent，等子 agent 完成 | 独立线程并发，lead 可继续工作 |
+| 通信方式 | 子 agent 返回结果给主 agent | JSONL inbox 消息总线，双向通信 |
+| 生命周期 | 一次性，用完即弃 | 持久化，working/idle 状态循环 |

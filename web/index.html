@@ -22,6 +22,9 @@
   --tool-skill: #2db5b5;
   --tool-background: #e67e22;
   --tool-default: #8899aa;
+  --team-working: #e74c3c;
+  --team-idle: #2ecc71;
+  --team-stopped: rgba(var(--paper-rgb), .25);
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -296,6 +299,64 @@ body {
   word-break: break-all;
 }
 
+/* Team message notification in output */
+.tool-card .team-notification {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: #3498db;
+  background: rgba(52, 152, 219, .08);
+  border-left: 2px solid #3498db;
+  border-radius: 3px;
+  padding: 6px 10px;
+  margin-bottom: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Message flow arrow for send/broadcast */
+.tool-card .msg-flow {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: rgba(var(--paper-rgb), .5);
+  margin-top: 2px;
+}
+.tool-card .msg-flow .arrow { color: #3498db; margin: 0 4px; }
+
+/* Teammate cards in sidebar */
+.team-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  animation: fadeSlideIn .3s cubic-bezier(.22,1,.36,1) both;
+}
+.team-card .team-avatar {
+  width: 28px; height: 28px; border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--mono); font-size: 11px; font-weight: 600;
+  flex-shrink: 0; text-transform: uppercase;
+  color: rgba(var(--paper-rgb), .9);
+}
+.team-card.working .team-avatar { background: var(--team-working); }
+.team-card.idle .team-avatar { background: var(--team-idle); }
+.team-card.stopped .team-avatar { background: var(--team-stopped); }
+.team-card .team-info { flex: 1; min-width: 0; }
+.team-card .team-name {
+  font-family: var(--mono); font-size: 12px; font-weight: 500;
+  color: rgba(var(--paper-rgb), .85);
+}
+.team-card .team-role { font-size: 11px; color: rgba(var(--paper-rgb), .4); }
+.team-card .team-status-dot {
+  width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+}
+.team-card.working .team-status-dot { background: var(--team-working); animation: pulse 1.5s ease-in-out infinite; }
+.team-card.idle .team-status-dot { background: var(--team-idle); }
+.team-card.stopped .team-status-dot { background: var(--team-stopped); }
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .4; }
+}
+
 /* ---- Detail Panel ---- */
 .detail-panel {
   width: 360px;
@@ -537,6 +598,13 @@ body {
     <div class="todo-list" id="todo-list">
       <div class="todo-empty" id="todo-empty">no tasks yet</div>
     </div>
+    <!-- Team section (s09 only, hidden by default) -->
+    <div id="team-section" style="display:none; border-top: 1px solid rgba(var(--paper-rgb),.06);">
+      <div class="todo-header">TEAM</div>
+      <div id="team-list">
+        <div class="todo-empty" id="team-empty">no teammates</div>
+      </div>
+    </div>
   </div>
 
   <!-- Chat Panel -->
@@ -583,6 +651,9 @@ let pendingQueue = [];
 // Track delegate nesting: when a delegate tool_call comes, subsequent sub_tool_calls
 // belong to it until the next non-sub event or processing_end
 let currentDelegateEl = null;
+// s09 team state: { name: { role, status } }
+let teamState = {};
+let currentStage = "";
 
 const chatEl = document.getElementById("chat-messages");
 const inputEl = document.getElementById("input");
@@ -600,6 +671,8 @@ const statTools = document.getElementById("stat-tools");
 const stageSelect = document.getElementById("stage-select");
 const sidebarHeader = document.getElementById("sidebar-header");
 const queuedRow = document.getElementById("queued-row");
+const teamSection = document.getElementById("team-section");
+const teamListEl = document.getElementById("team-list");
 
 // ---- Tool color mapping ----
 const TOOL_COLORS = {
@@ -614,6 +687,10 @@ const TOOL_COLORS = {
   load_skill: "var(--tool-skill)",
   compact: "#e67e22",
   background_status: "var(--tool-background)",
+  spawn: "#e74c3c",
+  send: "#3498db",
+  broadcast: "#1abc9c",
+  team_status: "#9b59b6",
 };
 
 // ---- WebSocket ----
@@ -739,6 +816,14 @@ function handleEvent(data) {
       appendToolCard(data, false);
       if (data.todo_state) updateTodo(data.todo_state);
       if (data.task_state) updateTodoText(data.task_state);
+      // s09: update team state from tool output
+      if (data.name === "spawn" && data.args) {
+        teamState[data.args.name] = { role: data.args.role, status: "working" };
+        renderTeam();
+      }
+      if (data.name === "team_status" && data.output) {
+        updateTeamFromStatus(data.output);
+      }
       scrollToBottom();
       break;
 
@@ -767,6 +852,7 @@ function handleEvent(data) {
 
     case "stage_switched":
       stageSelect.value = data.stage;
+      currentStage = data.stage;
       chatEl.innerHTML = "";
       toolCallCount = 0;
       turnCount = 0;
@@ -777,13 +863,16 @@ function handleEvent(data) {
       pendingQueue = [];
       renderQueue();
       detailEl.innerHTML = '<div class="detail-empty">click a tool card to inspect</div>';
-      // s07+: header 显示 TASKS，其他显示 TODO
-      sidebarHeader.textContent = (data.stage === "s07" || data.stage === "s08") ? "TASKS" : "TODO";
+      sidebarHeader.textContent = (data.stage === "s07" || data.stage === "s08" || data.stage === "s09") ? "TASKS" : "TODO";
       if (data.task_state) {
         updateTodoText(data.task_state);
       } else {
         todoListEl.innerHTML = '<div class="todo-empty">no tasks yet</div>';
       }
+      // s09: show/hide team section
+      teamState = {};
+      renderTeam();
+      teamSection.style.display = (data.stage === "s09") ? "" : "none";
       appendSystemMsg("Switched to " + data.tag);
       updateStatus();
       break;
@@ -857,12 +946,30 @@ function appendToolCard(data, isSub) {
   let bgNotifHtml = "";
   let remainingOutput = outputRaw;
   if (bgMatch) {
-    const notifText = bgMatch[0].split("\n\n")[0]; // notification block only
+    const notifText = bgMatch[0].split("\n\n")[0];
     remainingOutput = outputRaw.slice(notifText.length).replace(/^\n+/, "");
     bgNotifHtml = '<div class="bg-notification">' + escapeHtml(notifText) + '</div>';
   }
 
+  // Detect team message notification in output: "[队友消息]"
+  let teamNotifHtml = "";
+  const teamMatch = remainingOutput.match(/\[队友消息\]\n([\s\S]*)/);
+  if (teamMatch) {
+    const teamMsgText = "[队友消息]\n" + teamMatch[1].trim();
+    remainingOutput = remainingOutput.slice(0, remainingOutput.indexOf("[队友消息]")).replace(/\n+$/, "");
+    teamNotifHtml = '<div class="team-notification">' + escapeHtml(truncate(teamMsgText, 200)) + '</div>';
+  }
+
   const outputPreview = truncate(remainingOutput, 80);
+
+  // Message flow for send/broadcast
+  let msgFlowHtml = "";
+  if (data.name === "send" && data.args) {
+    msgFlowHtml = '<div class="msg-flow">lead <span class="arrow">\u2192</span> ' + escapeHtml(data.args.to || "?") + '</div>';
+  } else if (data.name === "broadcast" && data.args) {
+    const names = Object.keys(teamState).filter(n => teamState[n]);
+    msgFlowHtml = '<div class="msg-flow">lead <span class="arrow">\u2192</span> ' + escapeHtml(names.join(", ") || "all") + '</div>';
+  }
 
   el.innerHTML =
     '<div class="tool-header">' +
@@ -870,7 +977,9 @@ function appendToolCard(data, isSub) {
       (data.background_start ? '<span class="bg-badge">BG</span>' : '') +
     '</div>' +
     (argsPreview ? '<div class="tool-args">' + escapeHtml(argsPreview) + '</div>' : '') +
+    msgFlowHtml +
     bgNotifHtml +
+    teamNotifHtml +
     (outputPreview ? '<div class="tool-output-preview">' + escapeHtml(outputPreview) + '</div>' : '');
 
   el.dataset.toolData = JSON.stringify(data);
@@ -923,6 +1032,10 @@ function formatArgsPreview(name, args) {
     case "load_skill": return args.name || "";
     case "compact": return "compress context";
     case "background_status": return "check background tasks";
+    case "spawn": return (args.name || "?") + " (" + (args.role || "?") + ")";
+    case "send": return "→ " + (args.to || "?") + ": " + truncate(args.content || "", 40);
+    case "broadcast": return truncate(args.content || "", 60);
+    case "team_status": return "check team status";
     default: return JSON.stringify(args).slice(0, 80);
   }
 }
@@ -1049,6 +1162,44 @@ function escapeHtml(s) {
 function truncate(s, n) {
   if (!s) return "";
   return s.length > n ? s.slice(0, n) + "..." : s;
+}
+
+// ---- Team (s09) ----
+function renderTeam() {
+  const names = Object.keys(teamState);
+  if (names.length === 0) {
+    teamListEl.innerHTML = '<div class="todo-empty">no teammates</div>';
+    return;
+  }
+  teamListEl.innerHTML = names.map(name => {
+    const t = teamState[name];
+    const cls = t.status || "idle";
+    const initials = name.slice(0, 2);
+    return '<div class="team-card ' + cls + '">' +
+      '<div class="team-avatar">' + escapeHtml(initials) + '</div>' +
+      '<div class="team-info">' +
+        '<div class="team-name">' + escapeHtml(name) + '</div>' +
+        '<div class="team-role">' + escapeHtml(t.role || "") + '</div>' +
+      '</div>' +
+      '<div class="team-status-dot"></div>' +
+    '</div>';
+  }).join("");
+}
+
+function updateTeamFromStatus(output) {
+  if (!output) return;
+  // Parse: "  name（role）- status"
+  const lines = output.split("\n");
+  for (const line of lines) {
+    const m = line.match(/^\s+(\S+)\uff08(.+?)\uff09\s*-\s*(\w+)/);
+    if (m) {
+      const name = m[1], role = m[2], status = m[3];
+      if (name !== "lead") {
+        teamState[name] = { role: role, status: status };
+      }
+    }
+  }
+  renderTeam();
 }
 
 // ---- Init ----

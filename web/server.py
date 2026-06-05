@@ -32,7 +32,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
 from core.loop import agent_loop
-from tools import bash, read_file, write_file, todo, task, subagent, skill, compact, background
+from tools import bash, read_file, write_file, todo, task, subagent, skill, compact, background, team
 
 # ---- Stage Registry（s01 ~ s06 逐层叠加）----
 
@@ -264,18 +264,61 @@ def _build_stages() -> dict:
         "use_background": True,
     }
 
+    _team = (
+        "\n\n## 团队协作（spawn / send / broadcast / team_status）\n"
+        "任务太大一个人干不完时，用队友分工：\n"
+        "- spawn(name, role, prompt)：创建队友并分配任务，队友在后台独立工作\n"
+        "- send(to, content)：给指定队友发消息\n"
+        "- broadcast(content)：给所有队友广播消息\n"
+        "- team_status()：查看团队状态\n"
+        "队友完成后会自动通知你。\n"
+        "可以同时创建多个队友并发干活。"
+    )
+
+    # s09: + agent teams (spawn replaces delegate)
+    stages["s09"] = {
+        "tag": "s09 Agent Teams",
+        "system": base + _multi_tool + _background + _team + _task + _skill + _compact,
+        "tools": [
+            _SCHEMA_BASH_BG, read_file.SCHEMA, write_file.SCHEMA,
+            task.SCHEMA_CREATE, task.SCHEMA_UPDATE, task.SCHEMA_LIST,
+            team.SCHEMA_SPAWN, team.SCHEMA_SEND, team.SCHEMA_BROADCAST, team.SCHEMA_STATUS,
+            background.SCHEMA_STATUS, skill.SCHEMA, compact.SCHEMA,
+        ],
+        "handlers": {
+            "bash": bash.run,
+            "read_file": read_file.run,
+            "write_file": write_file.run,
+            "task_create": task.create,
+            "task_update": task.update,
+            "task_list": task.list_tasks,
+            "spawn": team.spawn,
+            "send": team.send,
+            "broadcast": team.broadcast,
+            "team_status": team.team_status,
+            "load_skill": skill.run,
+            "compact": compact.run,
+            "background_status": background.status,
+        },
+        "use_nag": True,
+        "use_subagent": False,
+        "use_compact": True,
+        "use_background": True,
+        "use_team": True,
+    }
+
     return stages
 
 
 STAGES = _build_stages()
-DEFAULT_STAGE = "s08"
+DEFAULT_STAGE = "s09"
 
 
 # ---- Background Wrapper（s08+）----
 
 
-def _make_background_handlers(base_handlers: dict, bg_manager) -> dict:
-    """包装所有 handler：bash+run_in_background 走后台线程，所有 handler 前缀后台通知。"""
+def _make_background_handlers(base_handlers: dict, bg_manager, team_manager=None) -> dict:
+    """包装所有 handler：bash+run_in_background 走后台线程，所有 handler 前缀后台通知 + 队友 inbox。"""
     import functools as _ft
 
     def wrap(name, handler):
@@ -285,6 +328,12 @@ def _make_background_handlers(base_handlers: dict, bg_manager) -> dict:
             completed = bg_manager.collect()
             if completed:
                 notifications = bg_manager.format_results(completed) + "\n\n"
+
+            # s09: drain lead inbox
+            if team_manager:
+                inbox = team_manager.read_inbox("lead")
+                if inbox != "[]":
+                    notifications += "[队友消息]\n" + inbox + "\n\n"
 
             if name == "bash" and kwargs.get("run_in_background"):
                 kwargs.pop("run_in_background", None)
@@ -384,6 +433,10 @@ def _run_agent_in_thread(
         if output and "[后台任务 bg_" in output:
             event["background_complete"] = True
 
+        # s09: 检测队友消息注入
+        if output and "[队友消息]" in output:
+            event["team_message"] = True
+
         event_queue.put(event)
 
         if stage_cfg["use_compact"]:
@@ -398,14 +451,20 @@ def _run_agent_in_thread(
 
     handlers = dict(stage_cfg["handlers"])
 
+    # s09: init team manager
+    team_manager = None
+    if stage_cfg.get("use_team"):
+        team.init()
+        team_manager = team.get_manager()
+
     # s08+: background wrapper 先于 nag
     if stage_cfg.get("use_background"):
-        handlers = _make_background_handlers(handlers, background)
+        handlers = _make_background_handlers(handlers, background, team_manager)
 
     if stage_cfg["use_nag"]:
         handlers = _make_nagging_handlers(handlers, stage_cfg["use_compact"])
 
-    # Post-loop flush：模型不再调工具后，检查是否有后台任务完成通知
+    # Post-loop flush：模型不再调工具后，检查是否有后台任务完成通知 + 队友消息
     while True:
         stop_reason = agent_loop(
             messages,
@@ -415,19 +474,35 @@ def _run_agent_in_thread(
             on_tool_call=on_tool_call,
         )
 
-        if not stage_cfg.get("use_background"):
+        if not stage_cfg.get("use_background") and not stage_cfg.get("use_team"):
             break
 
+        notification_parts = []
+
+        # 后台任务完成通知
         completed = background.collect()
         if completed:
-            notification = background.format_results(completed)
+            notification_parts.append(
+                f"[系统] 后台任务完成通知：\n{background.format_results(completed)}"
+            )
+
+        # s09: 队友 inbox 消息
+        team_inbox = "[]"
+        if team_manager:
+            team_inbox = team_manager.read_inbox("lead")
+
+        has_notifications = bool(completed) or team_inbox != "[]"
+
+        if has_notifications:
+            if team_inbox != "[]":
+                notification_parts.append(f"[队友消息]\n{team_inbox}")
             messages.append({
                 "role": "user",
-                "content": f"[系统] 后台任务完成通知：\n{notification}",
+                "content": "\n\n".join(notification_parts),
             })
             event_queue.put({
                 "type": "system_message",
-                "text": "后台任务完成，通知模型处理",
+                "text": "通知注入，通知模型处理",
             })
             continue
 
@@ -521,6 +596,10 @@ async def ws_endpoint(ws: WebSocket):
                     elif stage_id == "s08":
                         event["task_state"] = task.current()
                         background.reset()
+                    elif stage_id == "s09":
+                        event["task_state"] = task.current()
+                        background.reset()
+                        team.reset()
                     await ws.send_text(json.dumps(event, ensure_ascii=False))
                 continue
 
