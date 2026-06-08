@@ -25,6 +25,7 @@
   --team-working: #e74c3c;
   --team-idle: #2ecc71;
   --team-stopped: rgba(var(--paper-rgb), .25);
+  --tool-autonomous: #e67e22;
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -301,6 +302,34 @@ body {
   vertical-align: middle;
 }
 
+/* Autonomous badge for s11 task tools */
+.tool-card .autonomous-badge {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--tool-autonomous);
+  background: rgba(230, 126, 34, .12);
+  border-radius: 3px;
+  padding: 1px 5px;
+  margin-left: 6px;
+  letter-spacing: .03em;
+  vertical-align: middle;
+}
+
+/* Autonomous scan badge on team section header */
+.todo-header .auto-tag {
+  float: right;
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--tool-autonomous);
+  background: rgba(230, 126, 34, .12);
+  border-radius: 3px;
+  padding: 1px 5px;
+  letter-spacing: .03em;
+}
+
 .tool-card .bg-notification {
   font-family: var(--mono);
   font-size: 11px;
@@ -361,6 +390,14 @@ body {
   color: rgba(var(--paper-rgb), .85);
 }
 .team-card .team-role { font-size: 11px; color: rgba(var(--paper-rgb), .4); }
+.team-card .team-task {
+  font-family: var(--mono); font-size: 10px;
+  color: #e67e22; margin-top: 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.team-card .team-task::before {
+  content: "#"; opacity: .6;
+}
 .team-card .team-status-dot {
   width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
 }
@@ -661,7 +698,7 @@ body {
     </div>
     <!-- Team section (s09+, hidden by default) -->
     <div id="team-section" style="display:none; border-top: 1px solid rgba(var(--paper-rgb),.06);">
-      <div class="todo-header">TEAM</div>
+      <div class="todo-header" id="team-header">TEAM</div>
       <div id="team-list">
         <div class="todo-empty" id="team-empty">no teammates</div>
       </div>
@@ -723,6 +760,8 @@ let currentDelegateEl = null;
 let teamState = {};
 // s10 protocol state: [{ req_id, type, target/from, status, detail }]
 let protocolState = [];
+// s11 task owner map: { ownerName: { id, text } } (in_progress tasks per owner)
+let taskOwnerMap = {};
 let currentStage = "";
 
 const chatEl = document.getElementById("chat-messages");
@@ -742,6 +781,7 @@ const stageSelect = document.getElementById("stage-select");
 const sidebarHeader = document.getElementById("sidebar-header");
 const queuedRow = document.getElementById("queued-row");
 const teamSection = document.getElementById("team-section");
+const teamHeader = document.getElementById("team-header");
 const teamListEl = document.getElementById("team-list");
 const protocolSection = document.getElementById("protocol-section");
 const protocolListEl = document.getElementById("protocol-list");
@@ -768,6 +808,8 @@ const TOOL_COLORS = {
   plan_submit: "#8e44ad",
   plan_review: "#9b59b6",
   list_requests: "#3498db",
+  task_claim: "#e67e22",
+  task_complete: "#27ae60",
 };
 
 // ---- WebSocket ----
@@ -944,7 +986,7 @@ function handleEvent(data) {
       pendingQueue = [];
       renderQueue();
       detailEl.innerHTML = '<div class="detail-empty">click a tool card to inspect</div>';
-      sidebarHeader.textContent = (data.stage === "s07" || data.stage === "s08" || data.stage === "s09" || data.stage === "s10") ? "TASKS" : "TODO";
+      sidebarHeader.textContent = (data.stage === "s07" || data.stage === "s08" || data.stage === "s09" || data.stage === "s10" || data.stage === "s11") ? "TASKS" : "TODO";
       if (data.task_state) {
         updateTodoText(data.task_state);
       } else {
@@ -953,10 +995,15 @@ function handleEvent(data) {
       // s09: show/hide team section
       teamState = {};
       protocolState = [];
+      taskOwnerMap = {};
       renderTeam();
       renderProtocols();
-      teamSection.style.display = (data.stage === "s09" || data.stage === "s10") ? "" : "none";
-      protocolSection.style.display = (data.stage === "s10") ? "" : "none";
+      const hasTeam = (data.stage === "s09" || data.stage === "s10" || data.stage === "s11");
+      const isAutonomous = (data.stage === "s11");
+      teamSection.style.display = hasTeam ? "" : "none";
+      protocolSection.style.display = (data.stage === "s10" || data.stage === "s11") ? "" : "none";
+      // s11: show AUTO badge on team header
+      teamHeader.innerHTML = isAutonomous ? 'TEAM <span class="auto-tag">AUTO</span>' : 'TEAM';
       appendSystemMsg("Switched to " + data.tag);
       updateStatus();
       break;
@@ -1072,6 +1119,7 @@ function appendToolCard(data, isSub) {
       '<span class="tool-name">' + escapeHtml(data.name) + '</span>' +
       (data.background_start ? '<span class="bg-badge">BG</span>' : '') +
       (data.protocol_event ? '<span class="protocol-badge">PROTO</span>' : '') +
+      ((data.name === "task_claim" || data.name === "task_complete") ? '<span class="autonomous-badge">AUTO</span>' : '') +
     '</div>' +
     (argsPreview ? '<div class="tool-args">' + escapeHtml(argsPreview) + '</div>' : '') +
     msgFlowHtml +
@@ -1139,6 +1187,8 @@ function formatArgsPreview(name, args) {
     case "plan_submit": return truncate(args.plan || "", 60);
     case "plan_review": return "#" + (args.request_id || "?") + " " + (args.approve ? "approve" : "reject");
     case "list_requests": return "check protocol requests";
+    case "task_claim": return "claim #" + (args.task_id || "?");
+    case "task_complete": return "complete #" + (args.task_id || "?");
     default: return JSON.stringify(args).slice(0, 80);
   }
 }
@@ -1200,6 +1250,8 @@ function updateTodo(items) {
 function updateTodoText(text) {
   if (!text || text === "（无任务）") {
     todoListEl.innerHTML = '<div class="todo-empty">no tasks yet</div>';
+    taskOwnerMap = {};
+    renderTeam();
     return;
   }
 
@@ -1211,23 +1263,30 @@ function updateTodoText(text) {
 
   const lines = text.split("\n");
   let html = "";
+  // s11: extract owner → task mapping for team sidebar
+  const newOwnerMap = {};
 
   for (const line of lines) {
-    // Match task.py format: optional indent + #id + icon + text
-    // e.g. "#1 [ ] 搭建 Web API" or "  #6 [~] 设计数据库 schema"
-    const taskMatch = line.match(/^(\s*)#(\d+)\s+(\[[ x~?]\])\s+(.+)$/);
+    // Match task.py format: optional indent + #id + icon + optional @owner + text
+    const taskMatch = line.match(/^(\s*)#(\d+)\s+(\[[ x~?]\])\s+(?:@(\S+)\s+)?(.+)$/);
     if (taskMatch) {
       const indent = taskMatch[1].length;
       const num = taskMatch[2];
       const icon = taskMatch[3];
-      const taskText = taskMatch[4];
+      const owner = taskMatch[4] || "";
+      const taskText = taskMatch[5];
       const cls = iconColors[icon] || "todo-item pending";
       const isChild = indent > 0;
       const childStyle = isChild ? 'padding-left:32px;font-size:12px;' : '';
+      const ownerHtml = owner ? '<span style="color:#e67e22;font-weight:500;margin-right:4px">@' + escapeHtml(owner) + '</span>' : '';
       html += '<div class="' + cls + '" style="' + childStyle + '">' +
         '<span class="icon">' + escapeHtml(icon) + '</span>' +
-        '<span class="text">' + escapeHtml(taskText) + '</span>' +
+        '<span class="text">' + ownerHtml + escapeHtml(taskText) + '</span>' +
       '</div>';
+      // s11: track in_progress tasks with owners
+      if (owner && icon === "[~]") {
+        newOwnerMap[owner] = { id: num, text: taskText };
+      }
       continue;
     }
 
@@ -1245,6 +1304,11 @@ function updateTodoText(text) {
   }
 
   todoListEl.innerHTML = html || '<div class="todo-empty">no tasks yet</div>';
+
+  // s11: update team sidebar if owner mapping changed
+  const changed = JSON.stringify(newOwnerMap) !== JSON.stringify(taskOwnerMap);
+  taskOwnerMap = newOwnerMap;
+  if (changed) renderTeam();
 }
 
 // ---- Status ----
@@ -1267,7 +1331,7 @@ function truncate(s, n) {
   return s.length > n ? s.slice(0, n) + "..." : s;
 }
 
-// ---- Team (s09) ----
+// ---- Team (s09, s11 enhanced) ----
 function renderTeam() {
   const names = Object.keys(teamState);
   if (names.length === 0) {
@@ -1278,11 +1342,17 @@ function renderTeam() {
     const t = teamState[name];
     const cls = t.status || "idle";
     const initials = name.slice(0, 2);
+    // s11: show claimed task if teammate is working
+    const owned = taskOwnerMap[name];
+    const taskLine = (owned && cls === "working")
+      ? '<div class="team-task">' + escapeHtml(owned.id + " " + owned.text) + '</div>'
+      : "";
     return '<div class="team-card ' + cls + '">' +
       '<div class="team-avatar">' + escapeHtml(initials) + '</div>' +
       '<div class="team-info">' +
         '<div class="team-name">' + escapeHtml(name) + '</div>' +
         '<div class="team-role">' + escapeHtml(t.role || "") + '</div>' +
+        taskLine +
       '</div>' +
       '<div class="team-status-dot"></div>' +
     '</div>';

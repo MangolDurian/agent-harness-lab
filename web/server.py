@@ -353,11 +353,57 @@ def _build_stages() -> dict:
         "use_protocols": True,
     }
 
+    _autonomous = (
+        "\n\n## 自主认领（s11 新增）\n"
+        "队友空闲时会自动扫描任务板，发现无主 pending 任务会自己认领并执行。\n"
+        "你不需要手动分配任务给队友——只要创建了任务，空闲队友会自动认领。\n"
+        "队友认领后任务会显示 @队友名 标记，你可以用 task_list 查看。\n"
+        "队友空闲 60 秒无工作会自动退出。"
+    )
+
+    # s11: + autonomous agents
+    stages["s11"] = {
+        "tag": "s11 Autonomous Agents",
+        "system": base + _multi_tool + _background + _team + _protocols + _autonomous + _task + _skill + _compact,
+        "tools": [
+            _SCHEMA_BASH_BG, read_file.SCHEMA, write_file.SCHEMA,
+            task.SCHEMA_CREATE, task.SCHEMA_UPDATE, task.SCHEMA_LIST,
+            team.SCHEMA_SPAWN, team.SCHEMA_SEND, team.SCHEMA_BROADCAST, team.SCHEMA_STATUS,
+            protocols.SCHEMA_SHUTDOWN_REQUEST, protocols.SCHEMA_PLAN_REVIEW, protocols.SCHEMA_LIST_REQUESTS,
+            background.SCHEMA_STATUS, skill.SCHEMA, compact.SCHEMA,
+        ],
+        "handlers": {
+            "bash": bash.run,
+            "read_file": read_file.run,
+            "write_file": write_file.run,
+            "task_create": task.create,
+            "task_update": task.update,
+            "task_list": task.list_tasks,
+            "spawn": team.spawn,
+            "send": team.send,
+            "broadcast": team.broadcast,
+            "team_status": team.team_status,
+            "shutdown_request": protocols.shutdown_request,
+            "plan_review": protocols.plan_review,
+            "list_requests": protocols.list_requests,
+            "load_skill": skill.run,
+            "compact": compact.run,
+            "background_status": background.status,
+        },
+        "use_nag": True,
+        "use_subagent": False,
+        "use_compact": True,
+        "use_background": True,
+        "use_team": True,
+        "use_protocols": True,
+        "use_autonomous": True,
+    }
+
     return stages
 
 
 STAGES = _build_stages()
-DEFAULT_STAGE = "s10"
+DEFAULT_STAGE = "s11"
 
 
 # ---- Background Wrapper（s08+）----
@@ -533,21 +579,38 @@ def _run_agent_in_thread(
         team_manager = team.get_manager()
         # s10: configure teammates with protocol tools
         if stage_cfg.get("use_protocols"):
+            extra_tools_list = [protocols.SCHEMA_SHUTDOWN_RESPONSE, protocols.SCHEMA_PLAN_SUBMIT]
+            handler_factories_map = {
+                "shutdown_response": protocols.make_shutdown_response_handler,
+                "plan_submit": protocols.make_plan_submit_handler,
+            }
+            system_suffix_text = (
+                "\n\n## 团队协议\n"
+                "- 收到 shutdown_request 时，使用 shutdown_response(request_id, approve, reason) 响应\n"
+                "  - approve=true：收尾工作并退出\n"
+                "  - approve=false：拒绝关机，继续工作\n"
+                "- 遇到高风险操作时（如删除文件、重构核心代码），先用 plan_submit(plan) 提交计划\n"
+                "  - 等待 lead 审批后再执行\n"
+                "  - 如果计划被拒绝，调整方案后重新提交或放弃"
+            )
+            # s11: add task tools for teammates
+            if stage_cfg.get("use_autonomous"):
+                extra_tools_list += [task.SCHEMA_LIST, task.SCHEMA_CLAIM, task.SCHEMA_COMPLETE]
+                handler_factories_map["task_list"] = lambda name: task.list_tasks
+                handler_factories_map["task_claim"] = task.make_claim_handler
+                handler_factories_map["task_complete"] = task.make_complete_handler
+                system_suffix_text += (
+                    "\n\n## 自主认领\n"
+                    "- 你空闲时会自动扫描任务板，发现无主 pending 任务会通知你\n"
+                    "- 用 task_claim(task_id) 认领任务，认领后用 task_complete(task_id) 完成它\n"
+                    "- 同一时间你只能有一个 in_progress 任务\n"
+                    "- 完成任务后通过 send 向 lead 汇报"
+                )
+                team_manager.configure_autonomous(enabled=True, timeout=60.0)
             team_manager.configure_teammate(
-                extra_tools=[protocols.SCHEMA_SHUTDOWN_RESPONSE, protocols.SCHEMA_PLAN_SUBMIT],
-                handler_factories={
-                    "shutdown_response": protocols.make_shutdown_response_handler,
-                    "plan_submit": protocols.make_plan_submit_handler,
-                },
-                system_suffix=(
-                    "\n\n## 团队协议\n"
-                    "- 收到 shutdown_request 时，使用 shutdown_response(request_id, approve, reason) 响应\n"
-                    "  - approve=true：收尾工作并退出\n"
-                    "  - approve=false：拒绝关机，继续工作\n"
-                    "- 遇到高风险操作时（如删除文件、重构核心代码），先用 plan_submit(plan) 提交计划\n"
-                    "  - 等待 lead 审批后再执行\n"
-                    "  - 如果计划被拒绝，调整方案后重新提交或放弃"
-                ),
+                extra_tools=extra_tools_list,
+                handler_factories=handler_factories_map,
+                system_suffix=system_suffix_text,
             )
 
     # s08+: background wrapper 先于 nag
@@ -605,23 +668,84 @@ def _run_agent_in_thread(
             })
             continue
 
-        # 还有在跑的任务？短超时轮询等收尾
-        if background.has_running():
-            deadline = time.time() + 10
-            while background.has_running() and time.time() < deadline:
-                time.sleep(0.2)
-            completed = background.collect()
-            if completed:
-                notification = background.format_results(completed)
-                messages.append({
-                    "role": "user",
-                    "content": f"[系统] 后台任务完成通知：\n{notification}",
-                })
-                event_queue.put({
-                    "type": "system_message",
-                    "text": "后台任务完成，通知模型处理",
-                })
-                continue
+        # 还有在跑的后台任务或工作中的队友？短超时轮询等收尾
+        has_running = background.has_running()
+        has_working = team_manager and team_manager.has_working_teammates()
+        if has_running or has_working:
+            deadline = time.time() + 15
+            while time.time() < deadline:
+                time.sleep(0.5)
+                # 优先检查队友消息
+                if team_manager:
+                    team_inbox_raw = team_manager.read_inbox("lead")
+                    if team_inbox_raw != "[]":
+                        notification_parts = []
+                        if stage_cfg.get("use_protocols"):
+                            formatted = team.format_inbox(team_inbox_raw)
+                            if formatted:
+                                notification_parts.append(f"[队友消息]\n{formatted}")
+                        else:
+                            notification_parts.append(f"[队友消息]\n{team_inbox_raw}")
+                        completed = background.collect()
+                        if completed:
+                            notification_parts.insert(
+                                0,
+                                f"[系统] 后台任务完成通知：\n{background.format_results(completed)}",
+                            )
+                        notification_parts = [p for p in notification_parts if p]
+                        if notification_parts:
+                            messages.append({
+                                "role": "user",
+                                "content": "\n\n".join(notification_parts),
+                            })
+                            event_queue.put({
+                                "type": "system_message",
+                                "text": "通知注入，通知模型处理",
+                            })
+                            break
+                # 再检查后台任务
+                completed = background.collect()
+                if completed:
+                    notification = background.format_results(completed)
+                    messages.append({
+                        "role": "user",
+                        "content": f"[系统] 后台任务完成通知：\n{notification}",
+                    })
+                    event_queue.put({
+                        "type": "system_message",
+                        "text": "后台任务完成，通知模型处理",
+                    })
+                    break
+            else:
+                # 超时了但还在跑，不再等
+                pass
+            # 兜底：超时等待期间队友/后台可能在检查和 break 之间完成
+            final_inbox = team_manager.read_inbox("lead") if team_manager else "[]"
+            final_bg = background.collect()
+            if final_inbox != "[]" or final_bg:
+                notification_parts = []
+                if final_bg:
+                    notification_parts.append(
+                        f"[系统] 后台任务完成通知：\n{background.format_results(final_bg)}"
+                    )
+                if final_inbox != "[]":
+                    if stage_cfg.get("use_protocols"):
+                        formatted = team.format_inbox(final_inbox)
+                        if formatted:
+                            notification_parts.append(f"[队友消息]\n{formatted}")
+                    else:
+                        notification_parts.append(f"[队友消息]\n{final_inbox}")
+                notification_parts = [p for p in notification_parts if p]
+                if notification_parts:
+                    messages.append({
+                        "role": "user",
+                        "content": "\n\n".join(notification_parts),
+                    })
+                    event_queue.put({
+                        "type": "system_message",
+                        "text": "兜底通知注入，通知模型处理",
+                    })
+                    continue
 
         break
 
@@ -700,6 +824,11 @@ async def ws_endpoint(ws: WebSocket):
                         background.reset()
                         team.reset()
                     elif stage_id == "s10":
+                        event["task_state"] = task.current()
+                        background.reset()
+                        team.reset()
+                        protocols.reset()
+                    elif stage_id == "s11":
                         event["task_state"] = task.current()
                         background.reset()
                         team.reset()

@@ -21,3 +21,4 @@
 | s08 | Background Tasks | 慢活丢后台，结果搭便车回上下文 | [s08-review.md](./s08-review.md) |
 | s09 | Agent Teams | 从单人工作室升级成可复用小团队 | [s09-review.md](./s09-review.md) |
 | s10 | Team Protocols | 把随口消息升级成带编号的团队协议 | [s10-review.md](./s10-review.md) |
+| s11 | Autonomous Agents | 队友自己看板拿活，状态机硬兜底 | [s11-review.md](./s11-review.md) |

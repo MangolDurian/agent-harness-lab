@@ -44,6 +44,7 @@ agent-harness-lab/
 │   └── s08_background.py
 │   └── s09_agent_teams.py
 │   └── s10_team_protocols.py
+│   └── s11_autonomous_agents.py
 ├── docs/                       # 每课一份学习笔记
 │   ├── s01-notes.md
 │   ├── s02-notes.md
@@ -55,7 +56,8 @@ agent-harness-lab/
 │   ├── s08-notes.md
 │   ├── s09-notes.md
 │   ├── s10-notes.md
-│   └── review/                 # 大白话讲解 + 面试官视角复盘（s01~s10）
+│   ├── s11-notes.md
+│   └── review/                 # 大白话讲解 + 面试官视角复盘（s01~s11）
 ├── examples/                   # 每课一份阶段成果验证清单
 │   ├── s01_demo_prompts.md
 │   ├── s02_demo_prompts.md
@@ -66,7 +68,8 @@ agent-harness-lab/
 │   ├── s07_demo_prompts.md
 │   └── s08_demo_prompts.md
 │   ├── s09_demo_prompts.md
-│   └── s10_demo_prompts.md
+│   ├── s10_demo_prompts.md
+│   └── s11_demo_prompts.md
 ├── run-records/                # 手动实跑记录 + 复盘
 │   └── s04-subagent-run-review.md
 ├── run-outputs/                # 手动实跑产生的文件，避免污染 agents/
@@ -100,7 +103,7 @@ python agents/s01_agent_loop.py
 | s08 | Background Tasks | 慢操作丢后台，agent 继续想下一步 | ✅ |
 | s09 | Agent Teams | 任务太大一个人干不完，要能分给队友 | ✅ |
 | s10 | Team Protocols | 队友之间要有统一的沟通规矩 | ✅ |
-| s11 | Autonomous Agents | 队友自己看看板，有活就认领 | ⬜ |
+| s11 | Autonomous Agents | 队友自己看看板，有活就认领 | ✅ |
 | s12 | Worktree Isolation | 各干各的目录，互不干扰 | ⬜ |
 
 ## 每课的完成标准（课后作业的验收口径）
@@ -294,3 +297,23 @@ python agents/s01_agent_loop.py
 | 协议实现位置 | 修改 agent_loop 内部 | 独立 `tools/protocols.py` 模块 + team.py send 扩展 |
 | 队友工具注入 | 硬编码队友工具列表 | `configure_teammate()` 工厂模式，agent 层组装 |
 | 关机方式 | 保留 `__shutdown__` 强杀 | 双轨：shutdown_request 握手优先，`__shutdown__` 兜底 |
+
+---
+
+## s11：Autonomous Agents（已完成）
+
+队友自己看看板，有活就认领——空闲队友自动扫描任务板、认领无主任务、完成后自动找下一个。
+
+- 代码：[`agents/s11_autonomous_agents.py`](./agents/s11_autonomous_agents.py) + [`tools/task.py`](./tools/task.py) + [`tools/team.py`](./tools/team.py)
+- 笔记：[`docs/s11-notes.md`](./docs/s11-notes.md)
+- 验证：[`examples/s11_demo_prompts.md`](./examples/s11_demo_prompts.md)
+- 复盘：[`docs/review/s11-review.md`](./docs/review/s11-review.md)
+- 实跑复盘：[`run-records/s11-autonomous-agents-run-review.md`](./run-records/s11-autonomous-agents-run-review.md)
+
+### 相比原版的三个差异
+
+| 差异 | 原版 | 本项目 |
+|---|---|---|
+| 认领机制 | 基础设施直接 claim + 执行 | 基础设施扫描但构造 prompt 让 LLM 调 task_claim——保持"队友只通过工具操作"模式 |
+| in_progress 约束 | 全局单 in_progress + 文件锁 | 按 owner 的 in_progress 槽——多个队友可并行工作 |
+| 空闲超时 | 独立计时器线程或事件 | idle_start 时间戳嵌入现有 poll 循环——无新线程、无新事件 |

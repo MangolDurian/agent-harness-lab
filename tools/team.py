@@ -109,6 +109,10 @@ class TeammateManager:
         self._teammate_handler_factories: dict[str, callable] = {}
         self._teammate_system_suffix: str = ""
 
+        # s11 自主配置
+        self._idle_scan_enabled: bool = False
+        self._idle_timeout: float = 0.0  # 0 = 不超时
+
         # 确保目录存在
         self.dir.mkdir(parents=True, exist_ok=True)
         self.inbox_dir.mkdir(parents=True, exist_ok=True)
@@ -293,6 +297,16 @@ class TeammateManager:
         if system_suffix:
             self._teammate_system_suffix = system_suffix
 
+    def configure_autonomous(self, enabled: bool = False, timeout: float = 60.0) -> None:
+        """配置自主扫描和空闲超时（s11+ 使用）。
+
+        参数：
+            enabled: 是否启用空闲时自主扫描任务板
+            timeout: 空闲超时秒数，0 表示不超时
+        """
+        self._idle_scan_enabled = enabled
+        self._idle_timeout = timeout
+
     def request_graceful_exit(self, name: str) -> None:
         """标记队友需要优雅退出（由 ProtocolTracker 调用）。"""
         self._graceful_shutdown.add(name)
@@ -333,9 +347,11 @@ class TeammateManager:
     def _teammate_loop(self, name: str, role: str, prompt: str) -> None:
         """队友的持久化循环：working → idle → poll inbox → working → ...
 
-        不退出（除非收到 __shutdown__ 或优雅关机批准）。
-        idle 时每秒 poll inbox，有新消息就重新进入 working 状态跑 agent_loop。
+        s11 增强版：idle 时先 poll inbox（优先级 1），再扫描任务板（优先级 2），
+        超时无工作则自主退出。
         """
+        from tools import task as _task
+
         teammate_system = (
             f"你是队友 {name}，角色是 {role}。\n"
             "使用可用工具（bash、read_file、write_file、load_skill、send）完成任务。\n"
@@ -375,28 +391,60 @@ class TeammateManager:
             return  # 收到 shutdown
 
         # ---- 之后进入 idle → poll 循环 ----
+        idle_start = time.time()
         while True:
             # idle
             self.update_status(name, "idle")
             print(f"\033[36m  [{name}] idle，等待新消息...\033[0m")
 
-            # poll inbox，等新消息或 shutdown
+            # poll inbox + 自主扫描
             while True:
+                # 优先级 1: poll inbox
                 inbox = self.read_inbox(name)
                 inbox_data = json.loads(inbox)
-                if not inbox_data:
-                    time.sleep(_POLL_INTERVAL)
-                    continue
+                if inbox_data:
+                    # 检查 shutdown（向后兼容）
+                    for msg in inbox_data:
+                        if msg.get("content") == "__shutdown__":
+                            print(f"\033[36m  [{name}] 收到 shutdown，退出\033[0m")
+                            self.update_status(name, "stopped")
+                            return
 
-                # 检查 shutdown（向后兼容）
-                for msg in inbox_data:
-                    if msg.get("content") == "__shutdown__":
-                        print(f"\033[36m  [{name}] 收到 shutdown，退出\033[0m")
-                        self.update_status(name, "stopped")
-                        return
+                    # 有 inbox 消息，跳出 poll 循环
+                    break
 
-                # 有新任务，跳出 poll 循环
-                break
+                # 优先级 2: 自主扫描任务板
+                if self._idle_scan_enabled:
+                    claimable = _task._manager.find_claimable()
+                    if claimable:
+                        t = claimable[0]
+                        self.update_status(name, "working")
+                        prompt_text = (
+                            f"[自主认领] 发现无主任务 #{t['id']}：{t['text']}\n"
+                            "请使用 task_claim 认领并完成。"
+                        )
+                        scan_messages = [{"role": "user", "content": prompt_text}]
+                        print(f"\033[36m  [{name}] 自主认领任务 #{t['id']}\033[0m")
+                        if self._run_one_task(name, scan_messages, teammate_system, teammate_tools, teammate_handlers):
+                            return  # 收到 shutdown
+                        idle_start = time.time()  # 重置计时
+                        # 检查优雅关机
+                        if self._should_exit(name):
+                            self.update_status(name, "stopped")
+                            print(f"\033[36m  [{name}] 优雅关机完成\033[0m")
+                            return
+                        # 重新进入 idle
+                        self.update_status(name, "idle")
+                        continue
+
+                # 超时检查
+                if self._idle_timeout > 0 and time.time() - idle_start > self._idle_timeout:
+                    self.send(name, "lead", f"队友 {name} 空闲超时，自动退出")
+                    self.update_status(name, "stopped")
+                    print(f"\033[36m  [{name}] 空闲超时，自动退出\033[0m")
+                    return
+
+                time.sleep(_POLL_INTERVAL)
 
             # 收到新消息，进入 working
             self.update_status(name, "working")
@@ -413,6 +461,8 @@ class TeammateManager:
                 self.update_status(name, "stopped")
                 print(f"\033[36m  [{name}] 优雅关机完成\033[0m")
                 return
+
+            idle_start = time.time()  # 重置空闲计时
 
     def _run_one_task(self, name: str, messages: list, system: str, tools: list, handlers: dict) -> bool:
         """执行一个任务（跑 agent_loop 直到模型停止调工具），然后汇报。
