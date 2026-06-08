@@ -31,6 +31,63 @@ _RESERVED_NAMES = {"lead", "system", "all"}
 _POLL_INTERVAL = 1.0  # 队友 idle 时 poll inbox 的间隔（秒）
 
 
+def format_inbox_messages(messages: list[dict]) -> str:
+    """格式化 inbox 消息列表，处理结构化协议消息。
+
+    普通消息保持原样（向后兼容），协议消息按类型格式化为可读提示。
+    """
+    parts = []
+    for msg in messages:
+        msg_type = msg.get("type")
+        if msg_type == "shutdown_request":
+            metadata = msg.get("metadata", {})
+            req_id = metadata.get("request_id", "?")
+            parts.append(
+                f"[协议请求] 收到 shutdown_request (req_id: #{req_id}，来自 {msg['from']})\n"
+                f"请使用 shutdown_response 工具响应此请求"
+                f"（approve=true 收尾退出，approve=false 拒绝并继续工作）。"
+            )
+        elif msg_type == "shutdown_response":
+            metadata = msg.get("metadata", {})
+            req_id = metadata.get("request_id", "?")
+            approved = metadata.get("approve", False)
+            status = "已批准" if approved else "已拒绝"
+            content = msg.get("content", "")
+            parts.append(
+                f"[关机响应] 来自 {msg['from']}，req_id: #{req_id}，{status}"
+                + (f"\n原因：{content}" if content else "")
+            )
+        elif msg_type == "plan_request":
+            metadata = msg.get("metadata", {})
+            req_id = metadata.get("request_id", "?")
+            content = msg.get("content", "")
+            parts.append(
+                f"[计划请求] 来自 {msg['from']}，req_id: #{req_id}\n{content}"
+            )
+        elif msg_type == "plan_approval_response":
+            metadata = msg.get("metadata", {})
+            req_id = metadata.get("request_id", "?")
+            approved = metadata.get("approve", False)
+            status = "已批准" if approved else "已拒绝"
+            content = msg.get("content", "")
+            parts.append(
+                f"[计划审批结果] req_id: #{req_id}，{status}"
+                + (f"\n{content}" if content else "")
+                + ("\n你可以开始执行计划。" if approved else "\n请调整计划后重新提交。")
+            )
+        else:
+            parts.append(f"来自 {msg['from']}：{msg['content']}")
+    return "\n".join(parts)
+
+
+def format_inbox(inbox_json: str) -> str:
+    """将 read_inbox 返回的 JSON 格式化为可读文本，处理结构化协议消息。"""
+    if inbox_json == "[]":
+        return ""
+    messages = json.loads(inbox_json)
+    return format_inbox_messages(messages)
+
+
 def _truncate(text: str) -> str:
     """截断超长输出。"""
     return text[:_MAX_OUTPUT_LENGTH]
@@ -45,6 +102,12 @@ class TeammateManager:
         self.inbox_dir = self.dir / "inbox"
         self._threads: dict[str, threading.Thread] = {}
         self._lock = threading.Lock()
+        self._graceful_shutdown: set[str] = set()
+
+        # 队友扩展配置（由 agent 脚本设置，_teammate_loop 使用）
+        self._teammate_extra_tools: list = []
+        self._teammate_handler_factories: dict[str, callable] = {}
+        self._teammate_system_suffix: str = ""
 
         # 确保目录存在
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -82,14 +145,40 @@ class TeammateManager:
             return f"接收者 '{to}' 不存在于团队中"
         return None
 
-    def send(self, sender: str, to: str, content: str) -> str:
-        """追加消息到 to 的 inbox。"""
-        # 校验接收者
+    def _validate_teammate_alive(self, name: str) -> str | None:
+        """校验队友是否还活着（能接收消息）。返回错误信息或 None。"""
+        config = self._load_config()
+        info = config["teammates"].get(name)
+        if not info:
+            return f"队友 '{name}' 不存在"
+        if info.get("status") == "stopped":
+            return f"队友 '{name}' 已停止，无法接收消息"
+        thread = self._threads.get(name)
+        if thread is None:
+            return f"队友 '{name}' 无活跃线程，无法接收消息"
+        if not thread.is_alive():
+            return f"队友 '{name}' 已退出，无法接收消息"
+        return None
+
+    def send(self, sender: str, to: str, content: str,
+             msg_type: str | None = None, metadata: dict | None = None) -> str:
+        """追加消息到 to 的 inbox。支持结构化协议消息（msg_type + metadata）。"""
+        # 校验接收者存在
         err = self._validate_recipient(to)
         if err:
             return f"发送失败：{err}"
+        # 校验接收者活着（lead 除外）
+        if to != "lead":
+            err = self._validate_teammate_alive(to)
+            if err:
+                return f"发送失败：{err}"
 
         msg = {"from": sender, "content": content}
+        if msg_type:
+            msg["type"] = msg_type
+        if metadata:
+            msg["metadata"] = metadata
+
         path = self._inbox_path(to)
         with self._lock:
             with open(path, "a", encoding="utf-8") as f:
@@ -107,7 +196,11 @@ class TeammateManager:
         return f"消息已广播给 {len(recipients)} 人：{', '.join(recipients)}"
 
     def read_inbox(self, name: str) -> str:
-        """读取并清空 name 的 inbox（drain-on-read）。"""
+        """读取并清空 name 的 inbox（drain-on-read）。
+
+        先逐行 parse JSONL，再对每条消息的 content 截断，
+        最后格式化为 JSON 返回。避免在 JSON 字符串中间截断导致 parse 失败。
+        """
         path = self._inbox_path(name)
         if not path.exists():
             return "[]"
@@ -124,12 +217,16 @@ class TeammateManager:
             line = line.strip()
             if line:
                 try:
-                    messages.append(json.loads(line))
+                    msg = json.loads(line)
+                    # 对每条消息的 content 做截断，保护 JSON 结构
+                    if isinstance(msg.get("content"), str) and len(msg["content"]) > _MAX_OUTPUT_LENGTH:
+                        msg["content"] = msg["content"][:_MAX_OUTPUT_LENGTH]
+                    messages.append(msg)
                 except json.JSONDecodeError:
                     pass
 
         result = json.dumps(messages, ensure_ascii=False, indent=2)
-        return _truncate(result)
+        return result
 
     # ---- 队友管理 ----
 
@@ -181,6 +278,29 @@ class TeammateManager:
             lines.append(f"  {name}（{info['role']}）- {info['status']}")
         return "\n".join(lines)
 
+    def configure_teammate(self, extra_tools=None, handler_factories=None, system_suffix=""):
+        """配置队友的额外工具和系统提示词后缀（s10+ 使用）。
+
+        参数：
+            extra_tools: 追加到队友工具列表的 SCHEMA 列表
+            handler_factories: {tool_name: factory} 工厂函数，factory(teammate_name) → handler
+            system_suffix: 追加到队友 system prompt 的文本
+        """
+        if extra_tools is not None:
+            self._teammate_extra_tools = extra_tools
+        if handler_factories is not None:
+            self._teammate_handler_factories = handler_factories
+        if system_suffix:
+            self._teammate_system_suffix = system_suffix
+
+    def request_graceful_exit(self, name: str) -> None:
+        """标记队友需要优雅退出（由 ProtocolTracker 调用）。"""
+        self._graceful_shutdown.add(name)
+
+    def _should_exit(self, name: str) -> bool:
+        """检查队友是否需要优雅退出。"""
+        return name in self._graceful_shutdown
+
     def shutdown_all(self) -> None:
         """给所有队友发 shutdown 消息。"""
         config = self._load_config()
@@ -213,8 +333,8 @@ class TeammateManager:
     def _teammate_loop(self, name: str, role: str, prompt: str) -> None:
         """队友的持久化循环：working → idle → poll inbox → working → ...
 
-        不退出（除非收到 __shutdown__）。idle 时每秒 poll inbox，
-        有新消息就重新进入 working 状态跑 agent_loop。
+        不退出（除非收到 __shutdown__ 或优雅关机批准）。
+        idle 时每秒 poll inbox，有新消息就重新进入 working 状态跑 agent_loop。
         """
         teammate_system = (
             f"你是队友 {name}，角色是 {role}。\n"
@@ -222,7 +342,7 @@ class TeammateManager:
             "收到其他队友的消息时，根据内容采取行动。\n"
             "完成后通过 send 向 lead 汇报结果，用简短的文字总结你做了什么。\n"
             "不要重复已完成的操作。"
-        )
+        ) + self._teammate_system_suffix
 
         # 队友工具集：bash + 文件 + 技能 + send（绑定 sender）
         def _send_for_teammate(to: str, content: str) -> str:
@@ -234,7 +354,8 @@ class TeammateManager:
             write_file.SCHEMA,
             skill.SCHEMA,
             SCHEMA_SEND,
-        ]
+        ] + self._teammate_extra_tools
+
         teammate_handlers = {
             "bash": bash.run,
             "read_file": read_file.run,
@@ -242,6 +363,9 @@ class TeammateManager:
             "load_skill": skill.run,
             "send": _send_for_teammate,
         }
+        # 添加扩展工具 handler（工厂函数绑定队友名）
+        for tool_name, factory in self._teammate_handler_factories.items():
+            teammate_handlers[tool_name] = factory(name)
 
         # ---- 第一轮：用初始 prompt 启动 ----
         messages: list[dict] = [{"role": "user", "content": prompt}]
@@ -264,7 +388,7 @@ class TeammateManager:
                     time.sleep(_POLL_INTERVAL)
                     continue
 
-                # 检查 shutdown
+                # 检查 shutdown（向后兼容）
                 for msg in inbox_data:
                     if msg.get("content") == "__shutdown__":
                         print(f"\033[36m  [{name}] 收到 shutdown，退出\033[0m")
@@ -276,15 +400,19 @@ class TeammateManager:
 
             # 收到新消息，进入 working
             self.update_status(name, "working")
-            inbox_text = "\n".join(
-                f"来自 {m['from']}：{m['content']}" for m in inbox_data
-            )
+            inbox_text = format_inbox_messages(inbox_data)
             # 新任务用干净的上下文
             messages = [{"role": "user", "content": f"[收到消息]\n{inbox_text}"}]
             print(f"\033[36m  [{name}] 收到新任务，开始工作...\033[0m")
 
             if self._run_one_task(name, messages, teammate_system, teammate_tools, teammate_handlers):
                 return  # 收到 shutdown
+
+            # 检查优雅关机
+            if self._should_exit(name):
+                self.update_status(name, "stopped")
+                print(f"\033[36m  [{name}] 优雅关机完成\033[0m")
+                return
 
     def _run_one_task(self, name: str, messages: list, system: str, tools: list, handlers: dict) -> bool:
         """执行一个任务（跑 agent_loop 直到模型停止调工具），然后汇报。
@@ -296,15 +424,13 @@ class TeammateManager:
             inbox = self.read_inbox(name)
             inbox_data = json.loads(inbox)
             if inbox_data:
-                # 检查 shutdown
+                # 检查 shutdown（向后兼容）
                 for msg in inbox_data:
                     if msg.get("content") == "__shutdown__":
                         print(f"\033[36m  [{name}] 收到 shutdown，退出\033[0m")
                         self.update_status(name, "stopped")
                         return True
-                inbox_text = "\n".join(
-                    f"来自 {m['from']}：{m['content']}" for m in inbox_data
-                )
+                inbox_text = format_inbox_messages(inbox_data)
                 messages.append({"role": "user", "content": f"[收到消息]\n{inbox_text}"})
 
             # 调用 agent_loop（一轮）
@@ -319,6 +445,15 @@ class TeammateManager:
             # 如果模型不再调工具，本轮任务完成
             if stop_reason != "tool_calls":
                 break
+
+            # 检查优雅关机（shutdown_response approve=true 后提前退出）
+            if self._should_exit(name):
+                break
+
+        # 优雅关机时跳过汇报（respond_shutdown 已发过结构化消息）
+        if self._should_exit(name):
+            print(f"\033[36m  [{name}] 关机已批准，退出\033[0m")
+            return False
 
         # 取最后的文本输出
         final_text = ""

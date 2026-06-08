@@ -32,7 +32,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
 from core.loop import agent_loop
-from tools import bash, read_file, write_file, todo, task, subagent, skill, compact, background, team
+from tools import bash, read_file, write_file, todo, task, subagent, skill, compact, background, team, protocols
 
 # ---- Stage Registry（s01 ~ s06 逐层叠加）----
 
@@ -307,17 +307,63 @@ def _build_stages() -> dict:
         "use_team": True,
     }
 
+    _protocols = (
+        "\n\n## 团队协议（shutdown_request / plan_review / list_requests）\n"
+        "结构化请求-响应协议，替代随意消息：\n"
+        "- shutdown_request(name)：请求队友优雅关机\n"
+        "- plan_review(request_id, approve, feedback)：审批队友计划\n"
+        "- list_requests()：查看所有协议请求\n"
+        "队友会用 plan_submit 提交高风险操作计划，等待你审批。"
+    )
+
+    # s10: + team protocols
+    stages["s10"] = {
+        "tag": "s10 Team Protocols",
+        "system": base + _multi_tool + _background + _team + _protocols + _task + _skill + _compact,
+        "tools": [
+            _SCHEMA_BASH_BG, read_file.SCHEMA, write_file.SCHEMA,
+            task.SCHEMA_CREATE, task.SCHEMA_UPDATE, task.SCHEMA_LIST,
+            team.SCHEMA_SPAWN, team.SCHEMA_SEND, team.SCHEMA_BROADCAST, team.SCHEMA_STATUS,
+            protocols.SCHEMA_SHUTDOWN_REQUEST, protocols.SCHEMA_PLAN_REVIEW, protocols.SCHEMA_LIST_REQUESTS,
+            background.SCHEMA_STATUS, skill.SCHEMA, compact.SCHEMA,
+        ],
+        "handlers": {
+            "bash": bash.run,
+            "read_file": read_file.run,
+            "write_file": write_file.run,
+            "task_create": task.create,
+            "task_update": task.update,
+            "task_list": task.list_tasks,
+            "spawn": team.spawn,
+            "send": team.send,
+            "broadcast": team.broadcast,
+            "team_status": team.team_status,
+            "shutdown_request": protocols.shutdown_request,
+            "plan_review": protocols.plan_review,
+            "list_requests": protocols.list_requests,
+            "load_skill": skill.run,
+            "compact": compact.run,
+            "background_status": background.status,
+        },
+        "use_nag": True,
+        "use_subagent": False,
+        "use_compact": True,
+        "use_background": True,
+        "use_team": True,
+        "use_protocols": True,
+    }
+
     return stages
 
 
 STAGES = _build_stages()
-DEFAULT_STAGE = "s09"
+DEFAULT_STAGE = "s10"
 
 
 # ---- Background Wrapper（s08+）----
 
 
-def _make_background_handlers(base_handlers: dict, bg_manager, team_manager=None) -> dict:
+def _make_background_handlers(base_handlers: dict, bg_manager, team_manager=None, use_protocols=False) -> dict:
     """包装所有 handler：bash+run_in_background 走后台线程，所有 handler 前缀后台通知 + 队友 inbox。"""
     import functools as _ft
 
@@ -332,8 +378,13 @@ def _make_background_handlers(base_handlers: dict, bg_manager, team_manager=None
             # s09: drain lead inbox
             if team_manager:
                 inbox = team_manager.read_inbox("lead")
-                if inbox != "[]":
-                    notifications += "[队友消息]\n" + inbox + "\n\n"
+                # s10: format protocol messages nicely
+                if use_protocols:
+                    formatted = team.format_inbox(inbox)
+                else:
+                    formatted = inbox if inbox != "[]" else ""
+                if formatted:
+                    notifications += "[队友消息]\n" + formatted + "\n\n"
 
             if name == "bash" and kwargs.get("run_in_background"):
                 kwargs.pop("run_in_background", None)
@@ -437,6 +488,30 @@ def _run_agent_in_thread(
         if output and "[队友消息]" in output:
             event["team_message"] = True
 
+        # s10: 检测协议事件
+        if name in ("shutdown_request", "shutdown_response",
+                     "plan_submit", "plan_review", "list_requests"):
+            event["protocol_event"] = True
+            if name == "shutdown_request":
+                event["protocol_type"] = "shutdown_request"
+                event["protocol_target"] = args.get("name", "?")
+            elif name == "shutdown_response":
+                event["protocol_type"] = "shutdown_response"
+                event["protocol_req_id"] = args.get("request_id", "?")
+                event["protocol_approved"] = args.get("approve", False)
+            elif name == "plan_submit":
+                event["protocol_type"] = "plan_submit"
+                event["protocol_plan_preview"] = (args.get("plan", "") or "")[:80]
+            elif name == "plan_review":
+                event["protocol_type"] = "plan_review"
+                event["protocol_req_id"] = args.get("request_id", "?")
+                event["protocol_approved"] = args.get("approve", False)
+            elif name == "list_requests":
+                event["protocol_type"] = "list_requests"
+            # 发送当前协议状态快照
+            if stage_cfg.get("use_protocols"):
+                event["protocol_state"] = protocols._tracker.list_requests()
+
         event_queue.put(event)
 
         if stage_cfg["use_compact"]:
@@ -456,10 +531,29 @@ def _run_agent_in_thread(
     if stage_cfg.get("use_team"):
         team.init()
         team_manager = team.get_manager()
+        # s10: configure teammates with protocol tools
+        if stage_cfg.get("use_protocols"):
+            team_manager.configure_teammate(
+                extra_tools=[protocols.SCHEMA_SHUTDOWN_RESPONSE, protocols.SCHEMA_PLAN_SUBMIT],
+                handler_factories={
+                    "shutdown_response": protocols.make_shutdown_response_handler,
+                    "plan_submit": protocols.make_plan_submit_handler,
+                },
+                system_suffix=(
+                    "\n\n## 团队协议\n"
+                    "- 收到 shutdown_request 时，使用 shutdown_response(request_id, approve, reason) 响应\n"
+                    "  - approve=true：收尾工作并退出\n"
+                    "  - approve=false：拒绝关机，继续工作\n"
+                    "- 遇到高风险操作时（如删除文件、重构核心代码），先用 plan_submit(plan) 提交计划\n"
+                    "  - 等待 lead 审批后再执行\n"
+                    "  - 如果计划被拒绝，调整方案后重新提交或放弃"
+                ),
+            )
 
     # s08+: background wrapper 先于 nag
     if stage_cfg.get("use_background"):
-        handlers = _make_background_handlers(handlers, background, team_manager)
+        handlers = _make_background_handlers(handlers, background, team_manager,
+                                              use_protocols=stage_cfg.get("use_protocols", False))
 
     if stage_cfg["use_nag"]:
         handlers = _make_nagging_handlers(handlers, stage_cfg["use_compact"])
@@ -487,15 +581,20 @@ def _run_agent_in_thread(
             )
 
         # s09: 队友 inbox 消息
-        team_inbox = "[]"
+        team_inbox_raw = "[]"
         if team_manager:
-            team_inbox = team_manager.read_inbox("lead")
+            team_inbox_raw = team_manager.read_inbox("lead")
 
-        has_notifications = bool(completed) or team_inbox != "[]"
+        has_notifications = bool(completed) or team_inbox_raw != "[]"
 
         if has_notifications:
-            if team_inbox != "[]":
-                notification_parts.append(f"[队友消息]\n{team_inbox}")
+            if team_inbox_raw != "[]":
+                if stage_cfg.get("use_protocols"):
+                    formatted = team.format_inbox(team_inbox_raw)
+                    notification_parts.append(f"[队友消息]\n{formatted}" if formatted else "")
+                else:
+                    notification_parts.append(f"[队友消息]\n{team_inbox_raw}")
+            notification_parts = [p for p in notification_parts if p]
             messages.append({
                 "role": "user",
                 "content": "\n\n".join(notification_parts),
@@ -600,6 +699,11 @@ async def ws_endpoint(ws: WebSocket):
                         event["task_state"] = task.current()
                         background.reset()
                         team.reset()
+                    elif stage_id == "s10":
+                        event["task_state"] = task.current()
+                        background.reset()
+                        team.reset()
+                        protocols.reset()
                     await ws.send_text(json.dumps(event, ensure_ascii=False))
                 continue
 

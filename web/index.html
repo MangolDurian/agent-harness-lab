@@ -286,6 +286,21 @@ body {
 }
 
 /* Background completion notification in output */
+/* Protocol badge for s10 tools */
+.tool-card .protocol-badge {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: #e74c3c;
+  background: rgba(231, 76, 60, .12);
+  border-radius: 3px;
+  padding: 1px 5px;
+  margin-left: 6px;
+  letter-spacing: .03em;
+  vertical-align: middle;
+}
+
 .tool-card .bg-notification {
   font-family: var(--mono);
   font-size: 11px;
@@ -356,6 +371,52 @@ body {
   0%, 100% { opacity: 1; }
   50% { opacity: .4; }
 }
+
+/* Protocol cards in sidebar (s10) */
+.protocol-card {
+  padding: 8px 16px;
+  animation: fadeSlideIn .3s cubic-bezier(.22,1,.36,1) both;
+}
+.protocol-card .proto-header {
+  display: flex; align-items: center; gap: 6px; margin-bottom: 2px;
+}
+.protocol-card .proto-type {
+  font-family: var(--mono); font-size: 10px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .03em;
+}
+.protocol-card .proto-type.shutdown { color: #e74c3c; }
+.protocol-card .proto-type.plan { color: #9b59b6; }
+.protocol-card .proto-id {
+  font-family: var(--mono); font-size: 10px;
+  color: rgba(var(--paper-rgb), .35);
+}
+.protocol-card .proto-detail {
+  font-size: 12px; color: rgba(var(--paper-rgb), .55);
+  line-height: 1.4; margin-top: 2px;
+}
+.protocol-card .proto-status {
+  display: inline-block; font-family: var(--mono); font-size: 10px;
+  font-weight: 600; border-radius: 3px; padding: 1px 5px; margin-top: 3px;
+}
+.protocol-card .proto-status.pending {
+  color: #f39c12; background: rgba(243,156,18,.12);
+}
+.protocol-card .proto-status.approved {
+  color: #2ecc71; background: rgba(46,204,113,.12);
+}
+.protocol-card .proto-status.rejected {
+  color: #e74c3c; background: rgba(231,76,60,.12);
+}
+
+/* Protocol flow on tool cards */
+.tool-card .proto-flow {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: rgba(var(--paper-rgb), .5);
+  margin-top: 2px;
+}
+.tool-card .proto-flow .proto-arrow { color: #e74c3c; margin: 0 3px; }
+.tool-card .proto-flow .proto-arrow.plan-arrow { color: #9b59b6; }
 
 /* ---- Detail Panel ---- */
 .detail-panel {
@@ -598,11 +659,18 @@ body {
     <div class="todo-list" id="todo-list">
       <div class="todo-empty" id="todo-empty">no tasks yet</div>
     </div>
-    <!-- Team section (s09 only, hidden by default) -->
+    <!-- Team section (s09+, hidden by default) -->
     <div id="team-section" style="display:none; border-top: 1px solid rgba(var(--paper-rgb),.06);">
       <div class="todo-header">TEAM</div>
       <div id="team-list">
         <div class="todo-empty" id="team-empty">no teammates</div>
+      </div>
+    </div>
+    <!-- Protocol section (s10 only, hidden by default) -->
+    <div id="protocol-section" style="display:none; border-top: 1px solid rgba(var(--paper-rgb),.06);">
+      <div class="todo-header">PROTOCOLS</div>
+      <div id="protocol-list">
+        <div class="todo-empty" id="protocol-empty">no requests</div>
       </div>
     </div>
   </div>
@@ -653,6 +721,8 @@ let pendingQueue = [];
 let currentDelegateEl = null;
 // s09 team state: { name: { role, status } }
 let teamState = {};
+// s10 protocol state: [{ req_id, type, target/from, status, detail }]
+let protocolState = [];
 let currentStage = "";
 
 const chatEl = document.getElementById("chat-messages");
@@ -673,6 +743,8 @@ const sidebarHeader = document.getElementById("sidebar-header");
 const queuedRow = document.getElementById("queued-row");
 const teamSection = document.getElementById("team-section");
 const teamListEl = document.getElementById("team-list");
+const protocolSection = document.getElementById("protocol-section");
+const protocolListEl = document.getElementById("protocol-list");
 
 // ---- Tool color mapping ----
 const TOOL_COLORS = {
@@ -691,6 +763,11 @@ const TOOL_COLORS = {
   send: "#3498db",
   broadcast: "#1abc9c",
   team_status: "#9b59b6",
+  shutdown_request: "#e74c3c",
+  shutdown_response: "#c0392b",
+  plan_submit: "#8e44ad",
+  plan_review: "#9b59b6",
+  list_requests: "#3498db",
 };
 
 // ---- WebSocket ----
@@ -824,6 +901,10 @@ function handleEvent(data) {
       if (data.name === "team_status" && data.output) {
         updateTeamFromStatus(data.output);
       }
+      // s10: update protocol state
+      if (data.protocol_state) {
+        updateProtocols(data.protocol_state);
+      }
       scrollToBottom();
       break;
 
@@ -863,7 +944,7 @@ function handleEvent(data) {
       pendingQueue = [];
       renderQueue();
       detailEl.innerHTML = '<div class="detail-empty">click a tool card to inspect</div>';
-      sidebarHeader.textContent = (data.stage === "s07" || data.stage === "s08" || data.stage === "s09") ? "TASKS" : "TODO";
+      sidebarHeader.textContent = (data.stage === "s07" || data.stage === "s08" || data.stage === "s09" || data.stage === "s10") ? "TASKS" : "TODO";
       if (data.task_state) {
         updateTodoText(data.task_state);
       } else {
@@ -871,8 +952,11 @@ function handleEvent(data) {
       }
       // s09: show/hide team section
       teamState = {};
+      protocolState = [];
       renderTeam();
-      teamSection.style.display = (data.stage === "s09") ? "" : "none";
+      renderProtocols();
+      teamSection.style.display = (data.stage === "s09" || data.stage === "s10") ? "" : "none";
+      protocolSection.style.display = (data.stage === "s10") ? "" : "none";
       appendSystemMsg("Switched to " + data.tag);
       updateStatus();
       break;
@@ -971,13 +1055,27 @@ function appendToolCard(data, isSub) {
     msgFlowHtml = '<div class="msg-flow">lead <span class="arrow">\u2192</span> ' + escapeHtml(names.join(", ") || "all") + '</div>';
   }
 
+  // Protocol flow for s10 tools
+  let protoFlowHtml = "";
+  if (data.name === "shutdown_request" && data.args) {
+    protoFlowHtml = '<div class="proto-flow">lead <span class="proto-arrow">\u2192</span> ' + escapeHtml(data.args.name || "?") + ' <span style="color:rgba(var(--paper-rgb),.3)">shutdown_req</span></div>';
+  } else if (data.name === "shutdown_response" && data.args) {
+    protoFlowHtml = '<div class="proto-flow">' + escapeHtml(data.protocol_sender || "?") + ' <span class="proto-arrow">\u2192</span> lead <span style="color:rgba(var(--paper-rgb),.3)">shutdown_resp #' + escapeHtml(data.args.request_id || "?") + '</span></div>';
+  } else if (data.name === "plan_submit" && data.args) {
+    protoFlowHtml = '<div class="proto-flow">' + escapeHtml(data.protocol_sender || "?") + ' <span class="proto-arrow plan-arrow">\u2192</span> lead <span style="color:rgba(var(--paper-rgb),.3)">plan_submit</span></div>';
+  } else if (data.name === "plan_review" && data.args) {
+    protoFlowHtml = '<div class="proto-flow">lead <span class="proto-arrow plan-arrow">\u2192</span> <span style="color:rgba(var(--paper-rgb),.3)">plan_review #' + escapeHtml(data.args.request_id || "?") + '</span></div>';
+  }
+
   el.innerHTML =
     '<div class="tool-header">' +
       '<span class="tool-name">' + escapeHtml(data.name) + '</span>' +
       (data.background_start ? '<span class="bg-badge">BG</span>' : '') +
+      (data.protocol_event ? '<span class="protocol-badge">PROTO</span>' : '') +
     '</div>' +
     (argsPreview ? '<div class="tool-args">' + escapeHtml(argsPreview) + '</div>' : '') +
     msgFlowHtml +
+    protoFlowHtml +
     bgNotifHtml +
     teamNotifHtml +
     (outputPreview ? '<div class="tool-output-preview">' + escapeHtml(outputPreview) + '</div>' : '');
@@ -1036,6 +1134,11 @@ function formatArgsPreview(name, args) {
     case "send": return "→ " + (args.to || "?") + ": " + truncate(args.content || "", 40);
     case "broadcast": return truncate(args.content || "", 60);
     case "team_status": return "check team status";
+    case "shutdown_request": return "shutdown " + (args.name || "?");
+    case "shutdown_response": return "#" + (args.request_id || "?") + " " + (args.approve ? "approve" : "reject");
+    case "plan_submit": return truncate(args.plan || "", 60);
+    case "plan_review": return "#" + (args.request_id || "?") + " " + (args.approve ? "approve" : "reject");
+    case "list_requests": return "check protocol requests";
     default: return JSON.stringify(args).slice(0, 80);
   }
 }
@@ -1200,6 +1303,56 @@ function updateTeamFromStatus(output) {
     }
   }
   renderTeam();
+}
+
+// ---- Protocol (s10) ----
+function updateProtocols(stateText) {
+  if (!stateText || stateText === "无待处理请求") {
+    protocolState = [];
+    renderProtocols();
+    return;
+  }
+  const lines = stateText.split("\n");
+  const newState = [];
+  for (const line of lines) {
+    // Parse: "  关机 #abc123 → alice (pending)"
+    const shutMatch = line.match(/^\s*关机\s+#(\S+)\s+→\s+(\S+)\s+\((\w+)\)/);
+    if (shutMatch) {
+      newState.push({ req_id: shutMatch[1], type: "shutdown", target: shutMatch[2], status: shutMatch[3] });
+      continue;
+    }
+    // Parse: "  计划 #xyz789 ← bob (approved)"
+    const planMatch = line.match(/^\s*计划\s+#(\S+)\s+←\s+(\S+)\s+\((\w+)\)/);
+    if (planMatch) {
+      newState.push({ req_id: planMatch[1], type: "plan", from: planMatch[2], status: planMatch[3] });
+      continue;
+    }
+  }
+  protocolState = newState;
+  renderProtocols();
+}
+
+function renderProtocols() {
+  if (protocolState.length === 0) {
+    protocolListEl.innerHTML = '<div class="todo-empty">no requests</div>';
+    return;
+  }
+  protocolListEl.innerHTML = protocolState.map(p => {
+    const isShutdown = p.type === "shutdown";
+    const typeClass = isShutdown ? "shutdown" : "plan";
+    const typeLabel = isShutdown ? "SHUTDOWN" : "PLAN";
+    const detail = isShutdown
+      ? "→ " + escapeHtml(p.target || "?")
+      : "← " + escapeHtml(p.from || "?");
+    return '<div class="protocol-card">' +
+      '<div class="proto-header">' +
+        '<span class="proto-type ' + typeClass + '">' + typeLabel + '</span>' +
+        '<span class="proto-id">#' + escapeHtml(p.req_id) + '</span>' +
+      '</div>' +
+      '<div class="proto-detail">' + detail + '</div>' +
+      '<span class="proto-status ' + escapeHtml(p.status) + '">' + escapeHtml(p.status) + '</span>' +
+    '</div>';
+  }).join("");
 }
 
 // ---- Init ----

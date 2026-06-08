@@ -28,6 +28,7 @@ agent-harness-lab/
 │   ├── compact.py
 │   ├── background.py
 │   └── team.py
+│   └── protocols.py
 ├── skills/                     # 技能定义（markdown 文件），s05 新增
 │   ├── git.md
 │   ├── debug.md
@@ -42,6 +43,7 @@ agent-harness-lab/
 │   ├── s07_task_system.py
 │   └── s08_background.py
 │   └── s09_agent_teams.py
+│   └── s10_team_protocols.py
 ├── docs/                       # 每课一份学习笔记
 │   ├── s01-notes.md
 │   ├── s02-notes.md
@@ -52,7 +54,8 @@ agent-harness-lab/
 │   ├── s07-notes.md
 │   ├── s08-notes.md
 │   ├── s09-notes.md
-│   └── review/                 # 大白话讲解 + 面试官视角复盘（s01~s09）
+│   ├── s10-notes.md
+│   └── review/                 # 大白话讲解 + 面试官视角复盘（s01~s10）
 ├── examples/                   # 每课一份阶段成果验证清单
 │   ├── s01_demo_prompts.md
 │   ├── s02_demo_prompts.md
@@ -62,7 +65,8 @@ agent-harness-lab/
 │   ├── s06_demo_prompts.md
 │   ├── s07_demo_prompts.md
 │   └── s08_demo_prompts.md
-│   └── s09_demo_prompts.md
+│   ├── s09_demo_prompts.md
+│   └── s10_demo_prompts.md
 ├── run-records/                # 手动实跑记录 + 复盘
 │   └── s04-subagent-run-review.md
 ├── run-outputs/                # 手动实跑产生的文件，避免污染 agents/
@@ -95,7 +99,7 @@ python agents/s01_agent_loop.py
 | s07 | Task System | 大目标要拆成小任务，记在磁盘上 | ✅ |
 | s08 | Background Tasks | 慢操作丢后台，agent 继续想下一步 | ✅ |
 | s09 | Agent Teams | 任务太大一个人干不完，要能分给队友 | ✅ |
-| s10 | Team Protocols | 队友之间要有统一的沟通规矩 | ⬜ |
+| s10 | Team Protocols | 队友之间要有统一的沟通规矩 | ✅ |
 | s11 | Autonomous Agents | 队友自己看看板，有活就认领 | ⬜ |
 | s12 | Worktree Isolation | 各干各的目录，互不干扰 | ⬜ |
 
@@ -270,3 +274,23 @@ python agents/s01_agent_loop.py
 | 并发模型 | 阻塞主 agent，等子 agent 完成 | 独立线程并发，lead 可继续工作 |
 | 通信方式 | 子 agent 返回结果给主 agent | JSONL inbox 消息总线，双向通信 |
 | 生命周期 | 一次性，用完即弃 | 持久化，working/idle 状态循环 |
+
+---
+
+## s10：Team Protocols（已完成）
+
+队友之间要有统一的沟通规矩——结构化请求-响应协议替代随意消息，优雅关机替代强杀线程。
+
+- 代码：[`agents/s10_team_protocols.py`](./agents/s10_team_protocols.py) + [`tools/protocols.py`](./tools/protocols.py)
+- 笔记：[`docs/s10-notes.md`](./docs/s10-notes.md)
+- 验证：[`examples/s10_demo_prompts.md`](./examples/s10_demo_prompts.md)
+- 复盘：[`docs/review/s10-review.md`](./docs/review/s10-review.md)
+- 实跑复盘：[`run-records/s10-team-protocols-run-review.md`](./run-records/s10-team-protocols-run-review.md)
+
+### 相比原版的三个差异
+
+| 差异 | 原版 | 本项目 |
+|---|---|---|
+| 协议实现位置 | 修改 agent_loop 内部 | 独立 `tools/protocols.py` 模块 + team.py send 扩展 |
+| 队友工具注入 | 硬编码队友工具列表 | `configure_teammate()` 工厂模式，agent 层组装 |
+| 关机方式 | 保留 `__shutdown__` 强杀 | 双轨：shutdown_request 握手优先，`__shutdown__` 兜底 |
