@@ -32,7 +32,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
 from core.loop import agent_loop
-from tools import bash, read_file, write_file, todo, task, subagent, skill, compact, background, team, protocols
+from tools import bash, read_file, write_file, todo, task, subagent, skill, compact, background, team, protocols, worktree
 
 # ---- Stage Registry（s01 ~ s06 逐层叠加）----
 
@@ -399,11 +399,68 @@ def _build_stages() -> dict:
         "use_autonomous": True,
     }
 
+    _worktree = (
+        "\n\n## Worktree 隔离（s12 新增）\n"
+        "各干各的目录，互不干扰。用 worktree 给任务创建独立工作目录：\n"
+        "- worktree_create(name, task_id?)：创建 worktree 并可选绑定任务\n"
+        "- worktree_remove(name, force?, complete_task?)：删除 worktree\n"
+        "- worktree_keep(name)：保留 worktree\n"
+        "- worktree_list()：列出所有 worktree\n"
+        "- worktree_exec(name, command)：在 worktree 中执行命令\n"
+        "队友认领绑定 worktree 的任务时会自动在隔离目录中工作。"
+    )
+
+    # s12: + worktree isolation
+    stages["s12"] = {
+        "tag": "s12 Worktree Isolation",
+        "system": base + _multi_tool + _background + _team + _protocols + _autonomous + _worktree + _task + _skill + _compact,
+        "tools": [
+            _SCHEMA_BASH_BG, read_file.SCHEMA, write_file.SCHEMA,
+            task.SCHEMA_CREATE, task.SCHEMA_UPDATE, task.SCHEMA_LIST,
+            team.SCHEMA_SPAWN, team.SCHEMA_SEND, team.SCHEMA_BROADCAST, team.SCHEMA_STATUS,
+            protocols.SCHEMA_SHUTDOWN_REQUEST, protocols.SCHEMA_PLAN_REVIEW, protocols.SCHEMA_LIST_REQUESTS,
+            background.SCHEMA_STATUS, skill.SCHEMA, compact.SCHEMA,
+            worktree.SCHEMA_CREATE, worktree.SCHEMA_REMOVE,
+            worktree.SCHEMA_KEEP, worktree.SCHEMA_LIST, worktree.SCHEMA_EXEC,
+        ],
+        "handlers": {
+            "bash": bash.run,
+            "read_file": read_file.run,
+            "write_file": write_file.run,
+            "task_create": task.create,
+            "task_update": task.update,
+            "task_list": task.list_tasks,
+            "spawn": team.spawn,
+            "send": team.send,
+            "broadcast": team.broadcast,
+            "team_status": team.team_status,
+            "shutdown_request": protocols.shutdown_request,
+            "plan_review": protocols.plan_review,
+            "list_requests": protocols.list_requests,
+            "load_skill": skill.run,
+            "compact": compact.run,
+            "background_status": background.status,
+            "worktree_create": worktree.create_worktree,
+            "worktree_remove": worktree.remove_worktree,
+            "worktree_keep": worktree.keep_worktree,
+            "worktree_list": worktree.list_worktrees,
+            "worktree_exec": worktree.exec_in_worktree,
+        },
+        "use_nag": True,
+        "use_subagent": False,
+        "use_compact": True,
+        "use_background": True,
+        "use_team": True,
+        "use_protocols": True,
+        "use_autonomous": True,
+        "use_worktree": True,
+    }
+
     return stages
 
 
 STAGES = _build_stages()
-DEFAULT_STAGE = "s11"
+DEFAULT_STAGE = "s12"
 
 
 # ---- Background Wrapper（s08+）----
@@ -558,6 +615,13 @@ def _run_agent_in_thread(
             if stage_cfg.get("use_protocols"):
                 event["protocol_state"] = protocols._tracker.list_requests()
 
+        # s12: 检测 worktree 事件
+        if name in ("worktree_create", "worktree_remove", "worktree_keep",
+                     "worktree_list", "worktree_exec"):
+            event["worktree_event"] = True
+            if stage_cfg.get("use_worktree"):
+                event["worktree_state"] = worktree.get_manager().list_worktrees()
+
         event_queue.put(event)
 
         if stage_cfg["use_compact"]:
@@ -607,6 +671,17 @@ def _run_agent_in_thread(
                     "- 完成任务后通过 send 向 lead 汇报"
                 )
                 team_manager.configure_autonomous(enabled=True, timeout=60.0)
+                # s12: add worktree tool for teammates
+                if stage_cfg.get("use_worktree"):
+                    extra_tools_list.append(worktree.SCHEMA_EXEC)
+                    handler_factories_map["worktree_exec"] = lambda name: worktree.exec_in_worktree
+                    system_suffix_text += (
+                        "\n\n## Worktree 隔离\n"
+                        "- 如果任务绑定了 worktree，你的 bash/read_file/write_file 会自动在隔离目录工作\n"
+                        "- 你也可以用 worktree_exec(name, command) 在指定 worktree 中执行命令\n"
+                        "- 在隔离目录中的改动不会影响主目录或其他队友"
+                    )
+                    worktree.init()
             team_manager.configure_teammate(
                 extra_tools=extra_tools_list,
                 handler_factories=handler_factories_map,
@@ -833,6 +908,12 @@ async def ws_endpoint(ws: WebSocket):
                         background.reset()
                         team.reset()
                         protocols.reset()
+                    elif stage_id == "s12":
+                        event["task_state"] = task.current()
+                        background.reset()
+                        team.reset()
+                        protocols.reset()
+                        worktree.init()
                     await ws.send_text(json.dumps(event, ensure_ascii=False))
                 continue
 

@@ -349,6 +349,8 @@ class TeammateManager:
 
         s11 增强版：idle 时先 poll inbox（优先级 1），再扫描任务板（优先级 2），
         超时无工作则自主退出。
+
+        s12 增强版：认领绑定 worktree 的任务时，自动用 worktree-aware handler 替换默认 handler。
         """
         from tools import task as _task
 
@@ -382,6 +384,23 @@ class TeammateManager:
         # 添加扩展工具 handler（工厂函数绑定队友名）
         for tool_name, factory in self._teammate_handler_factories.items():
             teammate_handlers[tool_name] = factory(name)
+
+        # s12: worktree 隔离辅助函数
+        def _build_worktree_handlers(worktree_name: str) -> dict | None:
+            """如果任务绑定了 worktree，创建隔离 handler 并返回。"""
+            try:
+                from tools import worktree as _wt
+                wt_manager = _wt.get_manager()
+                wt_path = wt_manager.get_path(worktree_name)
+                if wt_path is None:
+                    return None
+                return {
+                    "bash": _wt.make_worktree_bash_handler(wt_path),
+                    "read_file": _wt.make_worktree_read_handler(wt_path),
+                    "write_file": _wt.make_worktree_write_handler(wt_path),
+                }
+            except Exception:
+                return None
 
         # ---- 第一轮：用初始 prompt 启动 ----
         messages: list[dict] = [{"role": "user", "content": prompt}]
@@ -419,13 +438,30 @@ class TeammateManager:
                     if claimable:
                         t = claimable[0]
                         self.update_status(name, "working")
-                        prompt_text = (
-                            f"[自主认领] 发现无主任务 #{t['id']}：{t['text']}\n"
-                            "请使用 task_claim 认领并完成。"
-                        )
+                        # s12: 如果任务有 worktree，构造带 worktree 信息的 prompt + 隔离 handler
+                        wt_name = t.get("worktree")
+                        if wt_name:
+                            prompt_text = (
+                                f"[自主认领] 发现无主任务 #{t['id']}：{t['text']}\n"
+                                f"[worktree] 此任务绑定了 worktree '{wt_name}'，你已在隔离目录中工作\n"
+                                "请使用 task_claim 认领并完成。"
+                            )
+                            # 构建 worktree-aware handler
+                            wt_handlers = _build_worktree_handlers(wt_name)
+                            task_handlers = dict(teammate_handlers)
+                            if wt_handlers:
+                                task_handlers.update(wt_handlers)
+                        else:
+                            prompt_text = (
+                                f"[自主认领] 发现无主任务 #{t['id']}：{t['text']}\n"
+                                "请使用 task_claim 认领并完成。"
+                            )
+                            task_handlers = teammate_handlers
+
                         scan_messages = [{"role": "user", "content": prompt_text}]
-                        print(f"\033[36m  [{name}] 自主认领任务 #{t['id']}\033[0m")
-                        if self._run_one_task(name, scan_messages, teammate_system, teammate_tools, teammate_handlers):
+                        print(f"\033[36m  [{name}] 自主认领任务 #{t['id']}"
+                              + (f" [wt:{wt_name}]" if wt_name else "") + "\033[0m")
+                        if self._run_one_task(name, scan_messages, teammate_system, teammate_tools, task_handlers):
                             return  # 收到 shutdown
                         idle_start = time.time()  # 重置计时
                         # 检查优雅关机

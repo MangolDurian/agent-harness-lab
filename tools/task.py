@@ -39,8 +39,10 @@ class TaskManager:
             self._tasks = data.get("tasks", {})
             self._next_id = data.get("next_id", 1)
             # s11: 向后兼容，给旧数据补 owner 字段
+            # s12: 向后兼容，给旧数据补 worktree 字段
             for t in self._tasks.values():
                 t.setdefault("owner", None)
+                t.setdefault("worktree", None)
         except (json.JSONDecodeError, OSError):
             pass
 
@@ -113,6 +115,7 @@ class TaskManager:
                 "status": fields["status"],
                 "parent_id": fields["parent_id"],
                 "owner": None,
+                "worktree": None,
                 "created_at": now,
                 "updated_at": now,
             }
@@ -201,6 +204,34 @@ class TaskManager:
         """查看任务，可选按状态筛选。"""
         return self.format(status)
 
+    # ---- s12 worktree 绑定 ----
+
+    def bind_worktree(self, task_id: str, worktree_name: str) -> str:
+        """绑定 worktree 到任务。线程安全。"""
+        with self._lock:
+            tid = str(task_id)
+            task = self._tasks.get(tid)
+            if not task:
+                return f"错误：任务 #{tid} 不存在"
+            if task.get("worktree"):
+                return f"错误：任务 #{tid} 已绑定 worktree '{task['worktree']}'"
+            task["worktree"] = worktree_name
+            task["updated_at"] = datetime.now(timezone.utc).isoformat()
+            self._save()
+            return f"任务 #{tid} 已绑定 worktree '{worktree_name}'"
+
+    def unbind_worktree(self, task_id: str) -> str:
+        """解除任务的 worktree 绑定。线程安全。"""
+        with self._lock:
+            tid = str(task_id)
+            task = self._tasks.get(tid)
+            if not task:
+                return f"错误：任务 #{tid} 不存在"
+            task["worktree"] = None
+            task["updated_at"] = datetime.now(timezone.utc).isoformat()
+            self._save()
+            return f"任务 #{tid} 的 worktree 绑定已解除"
+
     # ---- s11 自主认领 ----
 
     def claim(self, task_id: str, owner: str) -> str:
@@ -226,7 +257,11 @@ class TaskManager:
         task["status"] = "in_progress"
         task["updated_at"] = now
         self._save()
-        return self.format()
+        result = self.format()
+        # s12: 如果任务有 worktree，在返回中追加提示
+        if task.get("worktree"):
+            result += f"\n[worktree] 此任务绑定了 worktree '{task['worktree']}'，请在隔离目录中工作"
+        return result
 
     def complete(self, task_id: str, owner: str) -> str:
         """仅 owner 可标记完成。线程安全。"""
@@ -244,7 +279,11 @@ class TaskManager:
         task["status"] = "completed"
         task["updated_at"] = datetime.now(timezone.utc).isoformat()
         self._save()
-        return self.format()
+        result = self.format()
+        # s12: 完成时提示 worktree 可以清理
+        if task.get("worktree"):
+            result += f"\n[worktree] 任务的 worktree '{task['worktree']}' 可以用 worktree_remove 清理"
+        return result
 
     def find_claimable(self) -> list[dict]:
         """返回所有可认领的任务（owner=None 且 status=pending）。线程安全。"""
@@ -308,12 +347,13 @@ class TaskManager:
         return "\n".join(lines) + f"\n{summary}"
 
     def _format_task(self, task: dict, indent: bool = False) -> str:
-        """格式化单个任务行，以真实 id 开头，子任务用缩进表示，s11 起 @owner 标记。"""
+        """格式化单个任务行，以真实 id 开头，子任务用缩进表示，s11 起 @owner 标记，s12 起 [wt:name] 标记。"""
         status_icon = {"pending": "[ ]", "in_progress": "[~]", "completed": "[x]"}
         icon = status_icon.get(task["status"], "[?]")
         prefix = "  " if indent else ""
         owner_tag = f"@{task['owner']} " if task.get("owner") else ""
-        return f"{prefix}#{task['id']} {icon} {owner_tag}{task['text']}"
+        wt_tag = f"[wt:{task['worktree']}] " if task.get("worktree") else ""
+        return f"{prefix}#{task['id']} {icon} {owner_tag}{wt_tag}{task['text']}"
 
     def _summary(self) -> str:
         """生成状态统计摘要。"""

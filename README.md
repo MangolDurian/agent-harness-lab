@@ -29,6 +29,7 @@ agent-harness-lab/
 │   ├── background.py
 │   └── team.py
 │   └── protocols.py
+│   └── worktree.py
 ├── skills/                     # 技能定义（markdown 文件），s05 新增
 │   ├── git.md
 │   ├── debug.md
@@ -45,6 +46,7 @@ agent-harness-lab/
 │   └── s09_agent_teams.py
 │   └── s10_team_protocols.py
 │   └── s11_autonomous_agents.py
+│   └── s12_worktree_isolation.py
 ├── docs/                       # 每课一份学习笔记
 │   ├── s01-notes.md
 │   ├── s02-notes.md
@@ -57,7 +59,8 @@ agent-harness-lab/
 │   ├── s09-notes.md
 │   ├── s10-notes.md
 │   ├── s11-notes.md
-│   └── review/                 # 大白话讲解 + 面试官视角复盘（s01~s11）
+│   ├── s12-notes.md
+│   └── review/                 # 大白话讲解 + 面试官视角复盘（s01~s12）
 ├── examples/                   # 每课一份阶段成果验证清单
 │   ├── s01_demo_prompts.md
 │   ├── s02_demo_prompts.md
@@ -69,7 +72,8 @@ agent-harness-lab/
 │   └── s08_demo_prompts.md
 │   ├── s09_demo_prompts.md
 │   ├── s10_demo_prompts.md
-│   └── s11_demo_prompts.md
+│   ├── s11_demo_prompts.md
+│   └── s12_demo_prompts.md
 ├── run-records/                # 手动实跑记录 + 复盘
 │   └── s04-subagent-run-review.md
 ├── run-outputs/                # 手动实跑产生的文件，避免污染 agents/
@@ -104,7 +108,7 @@ python agents/s01_agent_loop.py
 | s09 | Agent Teams | 任务太大一个人干不完，要能分给队友 | ✅ |
 | s10 | Team Protocols | 队友之间要有统一的沟通规矩 | ✅ |
 | s11 | Autonomous Agents | 队友自己看看板，有活就认领 | ✅ |
-| s12 | Worktree Isolation | 各干各的目录，互不干扰 | ⬜ |
+| s12 | Worktree Isolation | 各干各的目录，互不干扰 | ✅ |
 
 ## 每课的完成标准（课后作业的验收口径）
 
@@ -317,3 +321,23 @@ python agents/s01_agent_loop.py
 | 认领机制 | 基础设施直接 claim + 执行 | 基础设施扫描但构造 prompt 让 LLM 调 task_claim——保持"队友只通过工具操作"模式 |
 | in_progress 约束 | 全局单 in_progress + 文件锁 | 按 owner 的 in_progress 槽——多个队友可并行工作 |
 | 空闲超时 | 独立计时器线程或事件 | idle_start 时间戳嵌入现有 poll 循环——无新线程、无新事件 |
+
+---
+
+## s12：Worktree Isolation（已完成）
+
+各干各的目录，互不干扰——给任务绑定独立的 git worktree 目录，队友认领任务时自动在隔离目录工作。
+
+- 代码：[`agents/s12_worktree_isolation.py`](./agents/s12_worktree_isolation.py) + [`tools/worktree.py`](./tools/worktree.py)
+- 笔记：[`docs/s12-notes.md`](./docs/s12-notes.md)
+- 验证：[`examples/s12_demo_prompts.md`](./examples/s12_demo_prompts.md)
+- 复盘：[`docs/review/s12-review.md`](./docs/review/s12-review.md)
+- 实跑复盘：[`run-records/s12-worktree-isolation-run-review.md`](./run-records/s12-worktree-isolation-run-review.md)
+
+### 相比原版的三个差异
+
+| 差异 | 原版 | 本项目 |
+|---|---|---|
+| 任务存储 | `.tasks/task_N.json` 每任务单文件 | 保持 `data/tasks.json` 统一文件 + 新增 `worktree` 字段 |
+| 执行隔离方式 | 修改 loop 层传入 cwd | 工厂函数创建 worktree-aware 的 bash/read/write handler |
+| Worktree 粒度 | 全局 worktree exec | 队友认领绑定 worktree 的任务时自动隔离 |
